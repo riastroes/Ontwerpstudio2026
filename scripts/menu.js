@@ -1270,6 +1270,26 @@
     const svg = doc.documentElement;
     if (svg) svg.setAttribute('overflow', 'visible');
 
+    if (svg) {
+      if (!svg.getAttribute('xmlns')) svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+      // iOS can be picky with SVG sizing; ensure we have explicit dimensions.
+      const hasW = !!svg.getAttribute('width');
+      const hasH = !!svg.getAttribute('height');
+      if (!hasW || !hasH) {
+        let vbW = 100;
+        let vbH = 100;
+        const vb = (svg.getAttribute('viewBox') || '').trim();
+        const parts = vb.split(/\s+/).map((n) => Number(n)).filter((n) => Number.isFinite(n));
+        if (parts.length === 4) {
+          vbW = Math.max(1, parts[2]);
+          vbH = Math.max(1, parts[3]);
+        }
+        if (!hasW) svg.setAttribute('width', String(vbW));
+        if (!hasH) svg.setAttribute('height', String(vbH));
+      }
+    }
+
     const stroked = Array.from(doc.querySelectorAll('[stroke]'));
     if (stroked.length === 0 && svg) {
       svg.setAttribute('stroke', safeColor);
@@ -1299,7 +1319,7 @@
     const key = `${file}|${safeColor}|${clamped}`;
 
     const cached = this.variantCache.get(key);
-    if (cached && cached.img && cached.img.complete) return Promise.resolve(cached.img);
+    if (cached && cached.source) return Promise.resolve(cached.source);
     if (cached && cached.promise) return cached.promise;
 
     const img = new Image();
@@ -1307,23 +1327,47 @@
       .then((svgText) => this.buildSvgVariant(svgText, safeColor, clamped))
       .then((variantText) =>
         new Promise((resolve, reject) => {
-          img.onload = () => resolve(img);
           img.onerror = () => reject(new Error(`Failed to load variant SVG image: ${file}`));
           const blob = new Blob([variantText], { type: 'image/svg+xml' });
           const blobUrl = URL.createObjectURL(blob);
           img.onload = () => {
-            URL.revokeObjectURL(blobUrl);
-            resolve(img);
-          };
-          img.onerror = () => {
-            URL.revokeObjectURL(blobUrl);
-            reject(new Error(`Failed to load variant SVG image: ${file}`));
+            try {
+              // Rasterize SVG into a bitmap canvas. This improves export reliability on iOS
+              // where canvases that involve SVG patterns can fail to export.
+              const iw = Math.max(1, img.naturalWidth || img.width || 1);
+              const ih = Math.max(1, img.naturalHeight || img.height || 1);
+              const targetMax = 512;
+              const scale = Math.max(1, Math.floor(targetMax / Math.max(iw, ih)));
+              const cw = Math.max(1, Math.min(targetMax, iw * scale));
+              const ch = Math.max(1, Math.min(targetMax, ih * scale));
+
+              const c = document.createElement('canvas');
+              c.width = cw;
+              c.height = ch;
+              const cctx = c.getContext('2d');
+              if (!cctx) throw new Error('No 2D context for pattern rasterization');
+              cctx.clearRect(0, 0, cw, ch);
+              cctx.drawImage(img, 0, 0, cw, ch);
+
+              URL.revokeObjectURL(blobUrl);
+              resolve(c);
+            } catch (e) {
+              // If rasterization fails, fall back to the SVG image.
+              URL.revokeObjectURL(blobUrl);
+              resolve(img);
+            }
           };
           img.src = blobUrl;
         })
       );
 
-    this.variantCache.set(key, { img, promise });
+    this.variantCache.set(key, { source: null, promise });
+    promise
+      .then((source) => {
+        const entry = this.variantCache.get(key) || {};
+        this.variantCache.set(key, { ...entry, source });
+      })
+      .catch(() => {});
     return promise;
   }
 
@@ -3112,30 +3156,55 @@
     return isIOS || isIPadOS;
   }
 
-  async offerBlobToUser(blob, fileName) {
+  openBlankExportWindow(titleText) {
+    try {
+      const win = window.open('', '_blank');
+      if (!win) return null;
+      try {
+        const title = typeof titleText === 'string' && titleText.trim() ? titleText.trim() : 'Export';
+        win.document.open();
+        win.document.write(
+          `<!doctype html><html><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>${title}</title></head><body style="font-family:system-ui,-apple-system; padding:16px;">Bezig met exporteren…</body></html>`
+        );
+        win.document.close();
+      } catch (_) {
+        // ignore
+      }
+      return win;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async offerBlobToUser(blob, fileName, opts) {
     if (!(blob instanceof Blob)) return false;
     const safeName = typeof fileName === 'string' && fileName.trim() ? fileName.trim() : 'ontwerpstudio-2026.png';
     const mime = typeof blob.type === 'string' && blob.type ? blob.type : 'image/png';
+    const exportWindow = opts && typeof opts === 'object' ? opts.exportWindow : null;
+    const preferShare = !(opts && typeof opts === 'object' && opts.preferShare === false);
 
     // Best on iPad/iOS: Share sheet (Save Image / Save to Files).
-    try {
-      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-        let file = null;
-        try {
-          file = new File([blob], safeName, { type: mime });
-        } catch (_) {
-          file = null;
-        }
+    // NOTE: this only works reliably when called directly from a user gesture.
+    if (preferShare) {
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+          let file = null;
+          try {
+            file = new File([blob], safeName, { type: mime });
+          } catch (_) {
+            file = null;
+          }
 
-        const canShareFiles =
-          file && (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
-        if (canShareFiles) {
-          await navigator.share({ files: [file], title: safeName });
-          return true;
+          const canShareFiles =
+            file && (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
+          if (canShareFiles) {
+            await navigator.share({ files: [file], title: safeName });
+            return true;
+          }
         }
+      } catch (_) {
+        // ignore and fall back
       }
-    } catch (_) {
-      // ignore and fall back
     }
 
     const isIOS = this.isIosLike();
@@ -3149,6 +3218,21 @@
         url = '';
       }
       if (url) {
+			// If we already opened a tab synchronously (user gesture), reuse it.
+			try {
+				if (exportWindow && typeof exportWindow === 'object' && exportWindow.location && !exportWindow.closed) {
+					exportWindow.location.href = url;
+					window.setTimeout(() => {
+						try {
+							URL.revokeObjectURL(url);
+						} catch (_) {}
+					}, 60_000);
+					return true;
+				}
+			} catch (_) {
+				// ignore
+			}
+
         try {
           const a = document.createElement('a');
           a.href = url;
@@ -3755,16 +3839,32 @@
     downloadSelectedSavedImage() {
       const it = this.getSelectedSavedImageFromCache();
       if (!it) return;
+    const exportWindow = this.isIosLike() ? this.openBlankExportWindow('Afbeelding') : null;
+    const closeExportWindow = () => {
+      try {
+        if (exportWindow && typeof exportWindow === 'object' && !exportWindow.closed) exportWindow.close();
+      } catch (_) {}
+    };
+
     if (it && it.blob instanceof Blob) {
-      this.offerBlobToUser(it.blob, it.fileName || 'ontwerpstudio-2026.png').catch(() => false);
-      return;
+    this.offerBlobToUser(it.blob, it.fileName || 'ontwerpstudio-2026.png', { exportWindow, preferShare: true })
+      .then((ok) => {
+      if (ok) closeExportWindow();
+      })
+      .catch(() => {});
+    return;
     }
 
       this.savedImagesDB
         .get(String(it.id))
         .then((record) => {
           if (!record || !(record.blob instanceof Blob)) return;
-      this.offerBlobToUser(record.blob, record.fileName || 'ontwerpstudio-2026.png').catch(() => false);
+		  // After async IndexedDB read, iOS user-gesture is gone; use the pre-opened tab.
+		  this.offerBlobToUser(record.blob, record.fileName || 'ontwerpstudio-2026.png', { exportWindow, preferShare: false })
+			.then((ok) => {
+			  if (ok) closeExportWindow();
+			})
+			.catch(() => {});
         })
         .catch(() => {});
     }
@@ -4433,11 +4533,21 @@
       const stem = this.sanitizeFileStem(concept) || 'ontwerpstudio-2026';
       const fileName = `${stem}.png`;
 
+    // iPad/iOS: if IndexedDB fails, we need a tab opened *now* (user gesture),
+    // otherwise Safari may block opening/sharing the image later.
+    const exportWindow = this.isIosLike() ? this.openBlankExportWindow('Afbeelding') : null;
+    const closeExportWindow = () => {
+      try {
+        if (exportWindow && typeof exportWindow === 'object' && !exportWindow.closed) exportWindow.close();
+      } catch (_) {}
+    };
+
     const downloadBlob = (blob, name) => {
       if (!(blob instanceof Blob)) return;
       const safeName = typeof name === 'string' && name.trim() ? name.trim() : 'ontwerpstudio-2026.png';
       try {
-      this.offerBlobToUser(blob, safeName).catch(() => false);
+		// After async failures, prefer using the already-opened export tab.
+		this.offerBlobToUser(blob, safeName, { exportWindow, preferShare: false }).catch(() => false);
       } catch (_) {}
     };
 
@@ -4463,6 +4573,7 @@
           if (this.rightView === 'images') this.renderSavedImages();
           // After saving a cropped export, remove the crop grid.
           if (usedCropRect) clearCropSelection();
+		  closeExportWindow();
         })
         .catch(() => {
           // Common on iPad: quota exceeded / IndexedDB blocked.
