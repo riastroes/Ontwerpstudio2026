@@ -980,6 +980,10 @@
         if (Number.isFinite(bh) && bh > 0.5) refH = bh;
       }
 
+      // Beperk tile rendering tot max 4096x4096 px (iOS limiet)
+      refW = Math.min(refW, 4096);
+      refH = Math.min(refH, 4096);
+
       const ref = Math.max(0.5, Math.min(refW, refH));
       const tileSize = ref / clamped;
       const sx = Math.max(0.0001, tileSize / iw);
@@ -4560,44 +4564,65 @@
         });
       };
 
+      const showExportError = (msg) => {
+        alert(msg || 'Exporteren mislukt. Probeer het opnieuw of reset de app.');
+      };
+
+      const resetAfterExportError = () => {
+        try {
+          if (window && typeof window.location === 'object') {
+            // Hard reload to clear tainted canvas/caches
+            window.location.reload();
+          }
+        } catch (_) {}
+      };
+
       if (typeof out.toBlob === 'function') {
         out.toBlob((blob) => {
-      if (blob instanceof Blob) {
-        saveBlob(blob);
-        return;
-      }
-
-      // iOS/Safari can occasionally return null; fall back to a dataURL conversion.
-      try {
-        const dataUrl = out.toDataURL('image/png');
-        fetch(dataUrl)
-          .then((res) => res.blob())
-          .then((b) => {
-            if (b instanceof Blob) saveBlob(b);
-            else if (usedCropRect) clearCropSelection();
-          })
-          .catch(() => {
-            if (usedCropRect) clearCropSelection();
-          });
-      } catch (_) {
-        if (usedCropRect) clearCropSelection();
-      }
+          if (blob instanceof Blob) {
+            saveBlob(blob);
+            return;
+          }
+          // iOS/Safari can occasionally return null; fall back to a dataURL conversion.
+          try {
+            const dataUrl = out.toDataURL('image/png');
+            fetch(dataUrl)
+              .then((res) => res.blob())
+              .then((b) => {
+                if (b instanceof Blob) saveBlob(b);
+                else {
+                  showExportError('Exporteren mislukt (canvas is "besmet"). De app wordt opnieuw geladen.');
+                  resetAfterExportError();
+                }
+              })
+              .catch(() => {
+                showExportError('Exporteren mislukt (canvas is "besmet"). De app wordt opnieuw geladen.');
+                resetAfterExportError();
+              });
+          } catch (_) {
+            showExportError('Exporteren mislukt (canvas is "besmet"). De app wordt opnieuw geladen.');
+            resetAfterExportError();
+          }
         }, 'image/png');
         return;
       }
 
       // Fallback for older browsers.
-      const dataUrl = out.toDataURL('image/png');
-
-      // Convert data URL to Blob so we can still store it without triggering a download.
-      fetch(dataUrl)
-        .then((res) => res.blob())
-        .then((blob) => {
-          saveBlob(blob);
-        })
-        .catch(() => {
-          if (usedCropRect) clearCropSelection();
-        });
+      try {
+        const dataUrl = out.toDataURL('image/png');
+        fetch(dataUrl)
+          .then((res) => res.blob())
+          .then((blob) => {
+            saveBlob(blob);
+          })
+          .catch(() => {
+            showExportError('Exporteren mislukt (canvas is "besmet"). De app wordt opnieuw geladen.');
+            resetAfterExportError();
+          });
+      } catch (_) {
+        showExportError('Exporteren mislukt (canvas is "besmet"). De app wordt opnieuw geladen.');
+        resetAfterExportError();
+      }
     }
 
     makeClipKey(pathN) {
