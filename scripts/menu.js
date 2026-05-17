@@ -1356,9 +1356,19 @@
               URL.revokeObjectURL(blobUrl);
               resolve(c);
             } catch (e) {
-              // If rasterization fails, fall back to the SVG image.
+              // Als rasteren faalt, géén SVG-image gebruiken (iOS taint!).
               URL.revokeObjectURL(blobUrl);
-              resolve(img);
+              // Maak een fallback-canvas met effen kleur en tekst.
+              const fallback = document.createElement('canvas');
+              fallback.width = 64;
+              fallback.height = 64;
+              const ctx = fallback.getContext('2d');
+              ctx.fillStyle = safeColor || '#ccc';
+              ctx.fillRect(0, 0, 64, 64);
+              ctx.fillStyle = '#900';
+              ctx.font = 'bold 10px sans-serif';
+              ctx.fillText('PATTERN', 2, 32);
+              resolve(fallback);
             }
           };
           img.src = blobUrl;
