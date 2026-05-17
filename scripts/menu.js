@@ -6838,6 +6838,7 @@
 
         const { w, h } = getOverlaySize();
 
+        let cropCanvas = null;
         if (Array.isArray(start) && Array.isArray(end)) {
           const x0 = Math.min(start[0], end[0]);
           const y0 = Math.min(start[1], end[1]);
@@ -6854,6 +6855,15 @@
               w: clamp01(rw / w),
               h: clamp01(rh / h),
             };
+            // Maak direct een crop-canvas en vervang de lagen
+            cropCanvas = document.createElement('canvas');
+            cropCanvas.width = Math.round(rw);
+            cropCanvas.height = Math.round(rh);
+            const ctx = cropCanvas.getContext('2d');
+            if (ctx && this.canvas instanceof HTMLCanvasElement) {
+              ctx.drawImage(this.canvas, x0, y0, rw, rh, 0, 0, rw, rh);
+              this.applyCropResultToLayers(cropCanvas);
+            }
           }
         }
 
@@ -6863,6 +6873,40 @@
         drawOverlayPath();
         evt.preventDefault();
         return;
+          // --- Toevoeging: na croppen, maak PNG, wis lagen, zet PNG als enige laag ---
+          // Dit hoort direct na het afronden van de crop-actie, niet bij opslaan
+          applyCropResultToLayers(cropCanvas) {
+            if (!cropCanvas) return;
+            try {
+              const dataUrl = cropCanvas.toDataURL('image/png');
+              // Wis alle lagen
+              if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
+                this.canvasLayers.clearAllLayers();
+              }
+              // Maak nieuwe Image-laag
+              const img = new window.Image();
+              img.onload = () => {
+                if (this.canvasLayers && typeof this.canvasLayers.layers === 'object') {
+                  const layer = {
+                    kind: 'image',
+                    image: img,
+                    w: cropCanvas.width,
+                    h: cropCanvas.height,
+                    x: 0,
+                    y: 0,
+                    isBackground: true
+                  };
+                  this.canvasLayers.layers = [layer];
+                  if (typeof this.canvasLayers.redrawAllLayers === 'function') {
+                    this.canvasLayers.redrawAllLayers();
+                  }
+                }
+              };
+              img.src = dataUrl;
+            } catch (e) {
+              // fallback: doe niets
+            }
+          }
       }
 
       if (this.isDraggingShape) {
