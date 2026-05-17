@@ -4531,6 +4531,39 @@
         ctx.drawImage(src, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
       }
 
+        // --- Toevoeging: na croppen, maak PNG, wis lagen, zet PNG als enige laag ---
+        if (usedCropRect || hasActiveClip) {
+          try {
+            const dataUrl = out.toDataURL('image/png');
+            // Wis alle lagen
+            if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
+              this.canvasLayers.clearAllLayers();
+            }
+            // Maak nieuwe Image-laag
+            const img = new window.Image();
+            img.onload = () => {
+              // Voeg als nieuwe laag toe
+              if (this.canvasLayers && typeof this.canvasLayers.layers === 'object') {
+                const layer = {
+                  kind: 'image',
+                  image: img,
+                  w: out.width,
+                  h: out.height,
+                  x: 0,
+                  y: 0,
+                  isBackground: true
+                };
+                this.canvasLayers.layers = [layer];
+                if (typeof this.canvasLayers.redrawAllLayers === 'function') {
+                  this.canvasLayers.redrawAllLayers();
+                }
+              }
+            };
+            img.src = dataUrl;
+          } catch (e) {
+            // fallback: doe niets
+          }
+        }
       const concept = this.getConceptValue();
       const description = this.getDescriptionValue();
       const stem = this.sanitizeFileStem(concept) || 'ontwerpstudio-2026';
@@ -5448,19 +5481,29 @@
 
       // Newest layer first (top of list).
       for (let viewIndex = 0; viewIndex < layers.length; viewIndex++) {
+
         const i = layers.length - 1 - viewIndex; // model index
         const layer = layers[i] || {};
-		const isBg = layer && layer.isBackground === true;
+        const isBg = layer && layer.isBackground === true;
 
         const item = document.createElement('div');
         const isPrimary = i === this.activeLayerIndex;
         const isSelected = selectedSet.has(i) || isPrimary;
         item.className = 'layers__item' + (isSelected ? ' is-selected' : '') + (isPrimary ? ' is-primary' : '');
-    		item.draggable = !isBg;
+        item.draggable = !isBg;
         item.dataset.viewIndex = String(viewIndex);
 
         const left = document.createElement('span');
         left.className = 'layers__left';
+
+        // --- Nieuw: toon thumbnail voor image-layer ---
+        if (layer.kind === 'image' && layer.image instanceof window.Image && layer.image.src) {
+          const thumb = document.createElement('span');
+          thumb.className = 'layers__thumb';
+          thumb.style.backgroundImage = `url('${layer.image.src}')`;
+          thumb.title = 'Afbeelding';
+          left.appendChild(thumb);
+        }
 
         const radio = document.createElement('input');
         radio.type = 'checkbox';
@@ -5470,7 +5513,7 @@
         radio.addEventListener('click', (evt) => {
           evt.preventDefault();
           evt.stopPropagation();
-			handleLayerListClick(i);
+          handleLayerListClick(i);
         });
 
         const num = document.createElement('span');
