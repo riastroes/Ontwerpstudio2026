@@ -1357,7 +1357,11 @@
               resolve(c);
             } catch (e) {
               // Als rasteren faalt, géén SVG-image gebruiken (iOS taint!).
-              URL.revokeObjectURL(blobUrl);
+              try { URL.revokeObjectURL(blobUrl); } catch (_) {}
+              // Log welke pattern faalt
+              if (window && window.console && typeof window.console.error === 'function') {
+                console.error('Pattern rasterization failed:', file, e);
+              }
               // Maak een fallback-canvas met effen kleur en tekst.
               const fallback = document.createElement('canvas');
               fallback.width = 64;
