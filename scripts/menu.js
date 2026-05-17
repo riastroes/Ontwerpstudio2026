@@ -3839,32 +3839,17 @@
     downloadSelectedSavedImage() {
       const it = this.getSelectedSavedImageFromCache();
       if (!it) return;
-    const exportWindow = this.isIosLike() ? this.openBlankExportWindow('Afbeelding') : null;
-    const closeExportWindow = () => {
-      try {
-        if (exportWindow && typeof exportWindow === 'object' && !exportWindow.closed) exportWindow.close();
-      } catch (_) {}
-    };
-
-    if (it && it.blob instanceof Blob) {
-    this.offerBlobToUser(it.blob, it.fileName || 'ontwerpstudio-2026.png', { exportWindow, preferShare: true })
-      .then((ok) => {
-      if (ok) closeExportWindow();
-      })
-      .catch(() => {});
-    return;
-    }
+      if (it && it.blob instanceof Blob) {
+        this.offerBlobToUser(it.blob, it.fileName || 'ontwerpstudio-2026.png', { preferShare: true }).catch(() => {});
+        return;
+      }
 
       this.savedImagesDB
         .get(String(it.id))
         .then((record) => {
           if (!record || !(record.blob instanceof Blob)) return;
-		  // After async IndexedDB read, iOS user-gesture is gone; use the pre-opened tab.
-		  this.offerBlobToUser(record.blob, record.fileName || 'ontwerpstudio-2026.png', { exportWindow, preferShare: false })
-			.then((ok) => {
-			  if (ok) closeExportWindow();
-			})
-			.catch(() => {});
+      // After async IndexedDB read, iOS user-gesture is gone; navigate in the same tab if needed.
+      this.offerBlobToUser(record.blob, record.fileName || 'ontwerpstudio-2026.png', { preferShare: false }).catch(() => {});
         })
         .catch(() => {});
     }
@@ -4533,21 +4518,11 @@
       const stem = this.sanitizeFileStem(concept) || 'ontwerpstudio-2026';
       const fileName = `${stem}.png`;
 
-    // iPad/iOS: if IndexedDB fails, we need a tab opened *now* (user gesture),
-    // otherwise Safari may block opening/sharing the image later.
-    const exportWindow = this.isIosLike() ? this.openBlankExportWindow('Afbeelding') : null;
-    const closeExportWindow = () => {
-      try {
-        if (exportWindow && typeof exportWindow === 'object' && !exportWindow.closed) exportWindow.close();
-      } catch (_) {}
-    };
-
     const downloadBlob = (blob, name) => {
       if (!(blob instanceof Blob)) return;
       const safeName = typeof name === 'string' && name.trim() ? name.trim() : 'ontwerpstudio-2026.png';
       try {
-		// After async failures, prefer using the already-opened export tab.
-		this.offerBlobToUser(blob, safeName, { exportWindow, preferShare: false }).catch(() => false);
+		this.offerBlobToUser(blob, safeName, { preferShare: false }).catch(() => false);
       } catch (_) {}
     };
 
@@ -4573,7 +4548,6 @@
           if (this.rightView === 'images') this.renderSavedImages();
           // After saving a cropped export, remove the crop grid.
           if (usedCropRect) clearCropSelection();
-		  closeExportWindow();
         })
         .catch(() => {
           // Common on iPad: quota exceeded / IndexedDB blocked.
