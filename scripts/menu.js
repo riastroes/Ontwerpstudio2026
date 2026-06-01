@@ -22,9 +22,112 @@ function dbExists(name) {
 
 // Normaliseer CSS kleurstring (spaties weg, lowercase)
 function normalizeCssColorString(str) {
-  return (typeof str === 'string' ? str.trim().toLowerCase() : '');
+  const input = typeof str === 'string' ? str.trim() : '';
+  if (!input) return '';
+  if (typeof document === 'undefined' || !document.body) return input.toLowerCase();
+
+  const tmp = document.createElement('div');
+  tmp.style.color = input;
+  document.body.appendChild(tmp);
+  const out = getComputedStyle(tmp).color;
+  document.body.removeChild(tmp);
+  return typeof out === 'string' && out.trim() ? out.trim().toLowerCase() : input.toLowerCase();
+}
+
+function parseCssRgbString(str) {
+  const s = typeof str === 'string' ? str.trim().toLowerCase() : '';
+  if (!s) return null;
+  const m = s.match(/rgba?\(([^)]+)\)/i);
+  if (!m) return null;
+
+  const body = m[1].replace(/\//g, ' ');
+  const parts = body.includes(',')
+    ? body.split(',').map((p) => p.trim())
+    : body.split(/\s+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+
+  const r = Number(parts[0]);
+  const g = Number(parts[1]);
+  const b = Number(parts[2]);
+  if (![r, g, b].every((v) => Number.isFinite(v))) return null;
+
+  return {
+    r: Math.max(0, Math.min(255, Math.round(r))),
+    g: Math.max(0, Math.min(255, Math.round(g))),
+    b: Math.max(0, Math.min(255, Math.round(b))),
+  };
+}
+
+function tintRgb(rgb, tone) {
+  const base = rgb && Number.isFinite(rgb.r) && Number.isFinite(rgb.g) && Number.isFinite(rgb.b)
+    ? rgb
+    : { r: 0, g: 0, b: 0 };
+  const t = Number.isFinite(tone) ? Math.max(-1, Math.min(1, tone)) : 0;
+  const mix = t >= 0 ? 255 : 0;
+  const amount = Math.abs(t);
+  const blend = (v) => Math.round(v + (mix - v) * amount);
+  return {
+    r: Math.max(0, Math.min(255, blend(base.r))),
+    g: Math.max(0, Math.min(255, blend(base.g))),
+    b: Math.max(0, Math.min(255, blend(base.b))),
+  };
+}
+
+function rgbaCssFromRgb(rgb, alpha) {
+  const base = rgb && Number.isFinite(rgb.r) && Number.isFinite(rgb.g) && Number.isFinite(rgb.b)
+    ? rgb
+    : { r: 0, g: 0, b: 0 };
+  const a = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
+  return `rgba(${base.r}, ${base.g}, ${base.b}, ${a})`;
 }
 import { qs } from './menu/ui.js';
+import {
+  pointInPolygon,
+  normalizeRectPx,
+  collectContainedLayerIndicesInRect,
+  combinedClipBoundsPx,
+} from './menu/selection.js';
+import {
+  getImagePaintForLayerIndex as getImagePaintForLayerIndexFromLayers,
+  getFreehandPaintForLayerIndex as getFreehandPaintForLayerIndexFromLayers,
+  getImageRectPxForLayerIndex as getImageRectPxForLayerIndexFromLayers,
+  getClipPolyPxForLayerIndex as getClipPolyPxForLayerIndexFromLayers,
+  getFreehandBoundsPxForLayerIndex as getFreehandBoundsPxForLayerIndexFromLayers,
+  getClipBoundsPxForClipN as getClipBoundsPxForClipNFromOverlay,
+  getClipHandleAtPoint,
+  getImageHandleAtPoint,
+  hitTestTopmostImageLayer as hitTestTopmostImageLayerFromLayers,
+  hitTestTopmostClipLayer as hitTestTopmostClipLayerFromLayers,
+  hitTestTopmostFreehandLayer as hitTestTopmostFreehandLayerFromLayers,
+} from './menu/overlay.js';
+import {
+  handlePointerMoveDraggingShape,
+  handlePointerMoveResizingShape,
+  handlePointerMoveDraggingImage,
+  handlePointerMoveDraggingFreehand,
+  tryUpdateCroppingPreview,
+  updatePointerHoverCursor,
+  tryUpdateBoxSelectionPreview,
+  tryAppendDrawPathPoint,
+} from './menu/pointerMoveHandlers.js';
+import {
+  tryStartImageLayerDrag,
+  tryStartFreehandLayerDrag,
+  tryStartClipLayerInteraction,
+  tryStartActiveSelectionInteraction,
+  tryStartCropSelection,
+  tryStartBoxSelection,
+  startDrawStroke,
+} from './menu/pointerDownHandlers.js';
+import {
+  tryFinishCropping,
+  tryFinishDraggingShape,
+  tryFinishResizingShape,
+  tryFinishDraggingImage,
+  tryFinishDraggingFreehand,
+  tryFinishBoxSelection,
+  tryFinishDrawing,
+} from './menu/pointerFinishHandlers.js';
 
 // ES6 module entry: alle logica is nu opgesplitst in modules.
 
@@ -2186,6 +2289,20 @@ class SavedImagesDB {
 	  this.imageStartPos = null;
 	  this.imageStartPlacement = null; // {xN,yN,wN,hN}
 
+    this.isDraggingFreehand = false;
+    this.freehandPointerId = null;
+    this.freehandStartPos = null;
+    this.freehandTargetIndices = null;
+    this.freehandStartPathByIndex = null;
+    this.freehandShapeTargetIndices = null;
+    this.freehandShapeStartClipByIndex = null;
+
+    this.isBoxSelecting = false;
+    this.boxSelectPointerId = null;
+    this.boxSelectStartPos = null;
+    this.boxSelectRectPx = null;
+    this.boxSelectMoved = false;
+
       this.toolMode = 'draw';
       this.isCropping = false;
       this.cropPointerId = null;
@@ -2546,6 +2663,20 @@ class SavedImagesDB {
       this.imageDragMode = '';
       this.imageStartPos = null;
       this.imageStartPlacement = null;
+
+      this.isDraggingFreehand = false;
+      this.freehandPointerId = null;
+      this.freehandStartPos = null;
+      this.freehandTargetIndices = null;
+      this.freehandStartPathByIndex = null;
+      this.freehandShapeTargetIndices = null;
+      this.freehandShapeStartClipByIndex = null;
+
+      this.isBoxSelecting = false;
+      this.boxSelectPointerId = null;
+      this.boxSelectStartPos = null;
+      this.boxSelectRectPx = null;
+      this.boxSelectMoved = false;
 
       this.toolMode = 'draw';
       this.isCropping = false;
@@ -3927,45 +4058,64 @@ class SavedImagesDB {
           const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
           const selectedSet = new Set(this.getSelectedLayerIndices());
           if (Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0) selectedSet.add(this.activeLayerIndex);
+
+          // If the active layer belongs to a group, include the full group.
+          if (Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0) {
+            const activeLayer = layers[this.activeLayerIndex];
+            const activeGroupId = activeLayer && typeof activeLayer.groupId === 'string' && activeLayer.groupId.trim()
+              ? activeLayer.groupId.trim()
+              : '';
+            if (activeGroupId) {
+              for (let i = 0; i < layers.length; i++) {
+                const layer = layers[i];
+                if (layer && typeof layer.groupId === 'string' && layer.groupId === activeGroupId) {
+                  selectedSet.add(i);
+                }
+              }
+            }
+          }
+
           const selected = Array.from(selectedSet);
           const selectedClipIndices = selected.filter((i) => {
             const layer = layers[i];
             return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
           });
 
-          // If multiple shapes are selected, save them as one composite group.
-          if (selectedClipIndices.length >= 2) {
-            const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            const clipPathsN = [];
-            const clipKeys = new Set();
-            for (const idx of selectedClipIndices) {
-              const layer = layers[idx];
-              if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
-              const poly = layer.clipPathN.map((p) => [Number(p[0]), Number(p[1])]).filter((p) => Array.isArray(p) && p.length === 2);
-              if (poly.length < 3) continue;
-              clipPathsN.push(poly);
+          const clipPathsN = [];
+          const clipKeys = new Set();
+          const addPoly = (poly, preferredKey) => {
+            if (!Array.isArray(poly) || poly.length < 3) return;
+            const nextPoly = poly
+              .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
+              .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+            if (nextPoly.length < 3) return;
+            const key = typeof preferredKey === 'string' && preferredKey ? preferredKey : this.makeClipKey(nextPoly);
+            if (key && clipKeys.has(String(key))) return;
+            clipPathsN.push(nextPoly);
+            if (key) clipKeys.add(String(key));
+          };
 
-              const key = typeof layer.clipKey === 'string' && layer.clipKey ? layer.clipKey : this.makeClipKey(poly);
-              if (key) clipKeys.add(String(key));
-            }
+          for (const idx of selectedClipIndices) {
+            const layer = layers[idx];
+            if (!layer) continue;
+            addPoly(layer.clipPathN, layer.clipKey);
+          }
 
-            // If there is also a free (non-layer) active selection, include it.
-            const hasActiveFree = !(Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0)
-              && Array.isArray(this.activeClipPathN)
-              && this.activeClipPathN.length >= 3;
-            if (hasActiveFree) {
-              const poly = this.activeClipPathN
-                .map((p) => (Array.isArray(p) && p.length >= 2 ? [Number(p[0]), Number(p[1])] : null))
-                .filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
-              if (poly.length >= 3) {
-                const key = this.activeClipKey || this.makeClipKey(poly);
-                if (!key || !clipKeys.has(String(key))) {
-                  clipPathsN.push(poly);
-                  if (key) clipKeys.add(String(key));
-                }
-              }
-            }
+          // Also include a pending active composite selection (saved group placement flow).
+          if (Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length) {
+            for (const poly of this.activeClipPathsN) addPoly(poly, null);
+          }
 
+          // Include a pending free single selection if it is not already present.
+          const hasActiveFree = !(Number.isFinite(this.activeLayerIndex) && this.activeLayerIndex >= 0)
+            && Array.isArray(this.activeClipPathN)
+            && this.activeClipPathN.length >= 3;
+          if (hasActiveFree) addPoly(this.activeClipPathN, this.activeClipKey);
+
+          if (clipPathsN.length === 0) return;
+
+          const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          if (clipPathsN.length >= 2) {
             const groupKey = JSON.stringify(clipPathsN);
             const record = {
               id,
@@ -3974,27 +4124,21 @@ class SavedImagesDB {
               clipPathsN,
               clipKey: groupKey,
             };
-
             this.savedShapesDB.put(record).catch(() => {});
             if (this.rightView === 'shapes') this.renderSavedShapes();
             return;
           }
 
-          // Single active shape (free selection)
-          const hasActive = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
-          if (!hasActive) return;
-          const clipKey = this.activeClipKey || this.makeClipKey(this.activeClipPathN);
-          if (!clipKey) return;
-
-          const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const single = clipPathsN[0];
+          const singleKey = this.makeClipKey(single);
+          if (!singleKey) return;
           const record = {
             id,
             createdAt: Date.now(),
             kind: 'single',
-            clipPathN: this.activeClipPathN.map((p) => [Number(p[0]), Number(p[1])]),
-            clipKey,
+            clipPathN: single,
+            clipKey: singleKey,
           };
-
           this.savedShapesDB.put(record).catch(() => {});
           if (this.rightView === 'shapes') this.renderSavedShapes();
         });
@@ -4798,6 +4942,12 @@ class SavedImagesDB {
 
     if (indices.length === 0) return;
 
+    // Group placement adds multiple layers in one burst; each add schedules drawing.
+    // Force one full redraw so early layers are not skipped by timer replacement.
+    if (this.canvasLayers && typeof this.canvasLayers.redrawAllLayers === 'function') {
+      this.canvasLayers.redrawAllLayers();
+    }
+
     this.selectedLayerIndices = new Set(indices);
     const activeIdx = indices[0];
     this.setActiveLayerIndex(activeIdx);
@@ -4882,6 +5032,13 @@ class SavedImagesDB {
     }
 
     if (indices.length === 0) return;
+
+    // Group placement adds multiple layers in one burst; each add schedules drawing.
+    // Force one full redraw so early layers are not skipped by timer replacement.
+    if (this.canvasLayers && typeof this.canvasLayers.redrawAllLayers === 'function') {
+      this.canvasLayers.redrawAllLayers();
+    }
+
     this.selectedLayerIndices = new Set(indices);
     const activeIdx = indices[0];
     this.setActiveLayerIndex(activeIdx);
@@ -6004,75 +6161,41 @@ class SavedImagesDB {
 
   const getImagePaintForLayerIndex = (layerIndex) => {
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-    const layer = layers[layerIndex];
-    if (!layer) return null;
-    const paints = Array.isArray(layer.paints) ? layer.paints : [];
-    return paints.find((p) => p && p.kind === 'image' && p.blob instanceof Blob) || null;
+    return getImagePaintForLayerIndexFromLayers(layers, layerIndex);
+  };
+
+  const getFreehandPaintForLayerIndex = (layerIndex) => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    return getFreehandPaintForLayerIndexFromLayers(layers, layerIndex);
   };
 
   const getImageRectPxForLayerIndex = (layerIndex) => {
-    const paint = getImagePaintForLayerIndex(layerIndex);
-    if (!paint) return null;
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const { w, h } = getOverlaySize();
-    const xN = Number.isFinite(paint.xN) ? paint.xN : 0;
-    const yN = Number.isFinite(paint.yN) ? paint.yN : 0;
-    const wN = Number.isFinite(paint.wN) ? paint.wN : 0.25;
-    const hN = Number.isFinite(paint.hN) ? paint.hN : 0.25;
-    return {
-      x: xN * w,
-      y: yN * h,
-      w: wN * w,
-      h: hN * h,
-      xN,
-      yN,
-      wN,
-      hN,
-    };
+    return getImageRectPxForLayerIndexFromLayers(layers, layerIndex, { w, h });
   };
 
   const hitTestTopmostImageLayer = (px, py) => {
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
     const { w, h } = getOverlaySize();
-    if (w <= 0 || h <= 0) return -1;
-
-    for (let i = layers.length - 1; i >= 0; i--) {
-      const rect = getImageRectPxForLayerIndex(i);
-      if (!rect) continue;
-      const inside = px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
-      const onHandle = !!getImageHandleAtPoint(rect, px, py);
-      if (inside || onHandle) return i;
-    }
-    return -1;
+    return hitTestTopmostImageLayerFromLayers(layers, px, py, { w, h });
   };
 
   const getClipPolyPxForLayerIndex = (layerIndex) => {
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-    const layer = layers[layerIndex];
-    const clipN = layer && Array.isArray(layer.clipPathN) ? layer.clipPathN : null;
-    if (!clipN || clipN.length < 3) return null;
     const { w, h } = getOverlaySize();
-    return clipN.map((q) => [q[0] * w, q[1] * h]);
+    return getClipPolyPxForLayerIndexFromLayers(layers, layerIndex, { w, h });
+  };
+
+  const getFreehandBoundsPxForLayerIndex = (layerIndex) => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const { w, h } = getOverlaySize();
+    return getFreehandBoundsPxForLayerIndexFromLayers(layers, layerIndex, { w, h });
   };
 
   const getClipBoundsPxForClipN = (clipN) => {
-    if (!Array.isArray(clipN) || clipN.length < 3) return null;
     const { w, h } = getOverlaySize();
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const q of clipN) {
-      if (!Array.isArray(q) || q.length < 2) continue;
-      const x = Number(q[0]) * w;
-      const y = Number(q[1]) * h;
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
-    return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+    return getClipBoundsPxForClipNFromOverlay(clipN, { w, h });
   };
 
   const getSelectedClipBoundsPx = () => {
@@ -6087,68 +6210,36 @@ class SavedImagesDB {
     if (clips.length === 0) return null;
 
     const { w, h } = getOverlaySize();
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const clipN of clips) {
-      for (const q of clipN) {
-        if (!Array.isArray(q) || q.length < 2) continue;
-        const x = Number(q[0]) * w;
-        const y = Number(q[1]) * h;
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
-    return { minX, minY, maxX, maxY, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
-  };
-
-  const getClipHandleAtPoint = (bounds, px, py) => {
-    if (!bounds) return '';
-    const hx = bounds.maxX;
-    const hy = bounds.maxY;
-    const r = 18;
-    return Math.hypot(px - hx, py - hy) <= r ? 'se' : '';
+    return combinedClipBoundsPx(clips, w, h);
   };
 
   const hitTestTopmostClipLayer = (px, py) => {
     const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-    for (let i = layers.length - 1; i >= 0; i--) {
-      const polyPx = getClipPolyPxForLayerIndex(i);
-      if (!polyPx) continue;
-      if (pointInPolygon(px, py, polyPx)) return i;
-    }
-    return -1;
+    const { w, h } = getOverlaySize();
+    return hitTestTopmostClipLayerFromLayers(layers, px, py, { w, h });
   };
 
-  const getImageHandleAtPoint = (rect, px, py) => {
-    if (!rect) return '';
-    const hx = rect.x + rect.w;
-    const hy = rect.y + rect.h;
-    const r = 18;
-    const dx = px - hx;
-    const dy = py - hy;
-    return Math.hypot(dx, dy) <= r ? 'se' : '';
+  const hitTestTopmostFreehandLayer = (px, py) => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const { w, h } = getOverlaySize();
+    return hitTestTopmostFreehandLayerFromLayers(layers, px, py, { w, h });
   };
 
-    const pointInPolygon = (x, y, poly) => {
-      if (!Array.isArray(poly) || poly.length < 3) return false;
-      let inside = false;
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i][0];
-        const yi = poly[i][1];
-        const xj = poly[j][0];
-        const yj = poly[j][1];
-
-        const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0000001) + xi;
-        if (intersect) inside = !inside;
+  const collectLayerIndicesInRect = (selRect) => {
+    const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    return collectContainedLayerIndicesInRect(
+      selRect,
+      layers,
+      (i) => getImageRectPxForLayerIndex(i),
+      (i) => getFreehandBoundsPxForLayerIndex(i),
+      (i) => {
+        const layer = layers[i];
+        return Array.isArray(layer && layer.clipPathN) && layer.clipPathN.length >= 3
+          ? getClipBoundsPxForClipN(layer.clipPathN)
+          : null;
       }
-      return inside;
-    };
+    );
+  };
 
     const clearOverlay = () => {
       const ctx = this.drawOverlayCtx;
@@ -6168,16 +6259,23 @@ class SavedImagesDB {
     const w = Math.max(1, rect.width);
     const h = Math.max(1, rect.height);
 
+    const layersForOverlay = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
+    const selectedForOverlay = typeof this.getSelectedLayerIndices === 'function' ? this.getSelectedLayerIndices() : [];
+    const hasSelectedClipLayers = selectedForOverlay.some((idx) => {
+      const layer = layersForOverlay[idx];
+      return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+    });
+
     const polys = [];
     if (this.isDrawing && Array.isArray(this.drawPath) && this.drawPath.length >= 2) {
     const isFreeDraw = this.toolMode === 'free-draw';
     polys.push({ points: this.drawPath, close: !isFreeDraw });
-    } else if (Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length) {
+    } else if (!hasSelectedClipLayers && Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length) {
     for (const polyN of this.activeClipPathsN) {
       if (!Array.isArray(polyN) || polyN.length < 2) continue;
       polys.push({ points: polyN.map((p) => [p[0] * w, p[1] * h]), close: true });
     }
-    } else if (Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 2) {
+    } else if (!hasSelectedClipLayers && Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 2) {
     polys.push({ points: this.activeClipPathN.map((p) => [p[0] * w, p[1] * h]), close: true });
     }
 
@@ -6232,6 +6330,18 @@ class SavedImagesDB {
         ctx.strokeRect(bounds.maxX - 6, bounds.maxY - 6, 12, 12);
         ctx.restore();
       }
+    }
+
+    // Area selection box preview in Selecteren mode.
+    if (this.interactionMode === 'select' && this.isBoxSelecting && this.boxSelectRectPx) {
+      const r = this.boxSelectRectPx;
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#000000';
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+      ctx.restore();
     }
 
     // Image selection outline (if active layer is an image-layer)
@@ -6307,249 +6417,76 @@ class SavedImagesDB {
 
       const interactionMode = this.interactionMode === 'select' ? 'select' : 'draw';
 
-    // Click-to-select image layer (topmost hit), and start move/resize.
-    if (interactionMode === 'select' && this.toolMode !== 'crop') {
-    const hitIdx = hitTestTopmostImageLayer(p[0], p[1]);
-    if (hitIdx >= 0) {
-      this.setLayerSelectionSingle(hitIdx);
-      this.renderLayersList();
-      drawOverlayPath();
+    if (tryStartImageLayerDrag({
+      self: this,
+      evt,
+      p,
+      interactionMode,
+      overlay,
+      hitTestTopmostImageLayer,
+      getImageRectPxForLayerIndex,
+      getImageHandleAtPoint,
+      drawOverlayPath,
+    })) return;
 
-      const rect = getImageRectPxForLayerIndex(hitIdx);
-      const handle = getImageHandleAtPoint(rect, p[0], p[1]);
-      this.isDraggingImage = true;
-      this.imagePointerId = evt.pointerId;
-      this.imageLayerIndex = hitIdx;
-      this.imageDragMode = handle ? 'resize' : 'move';
-      this.imageStartPos = p;
-      this.imageStartPlacement = rect
-        ? { xN: rect.xN, yN: rect.yN, wN: rect.wN, hN: rect.hN }
-        : { xN: 0, yN: 0, wN: 0.25, hN: 0.25 };
+    if (tryStartFreehandLayerDrag({
+      self: this,
+      evt,
+      p,
+      interactionMode,
+      overlay,
+      hitTestTopmostFreehandLayer,
+      getFreehandPaintForLayerIndex,
+      drawOverlayPath,
+    })) return;
 
-      overlay.setPointerCapture(evt.pointerId);
-      overlay.style.cursor = this.imageDragMode === 'resize' ? 'nwse-resize' : 'grabbing';
-      evt.preventDefault();
-      return;
-    }
-    }
+      if (tryStartClipLayerInteraction({
+        self: this,
+        evt,
+        p,
+        interactionMode,
+        overlay,
+        hitTestTopmostClipLayer,
+        getSelectedClipBoundsPx,
+        getClipBoundsPxForClipN,
+        getClipHandleAtPoint,
+        getClipPolyPxForLayerIndex,
+        pointInPolygon,
+        drawOverlayPath,
+      })) return;
 
-      // Click-to-select clip (shape) layers on the canvas.
-      // Shift+click toggles multi-selection.
-      if (interactionMode === 'select' && this.toolMode !== 'crop') {
-        const clipIdx = hitTestTopmostClipLayer(p[0], p[1]);
-        if (clipIdx >= 0) {
-          if (evt.shiftKey) {
-            this.toggleLayerSelection(clipIdx);
-            this.renderLayersList();
-            drawOverlayPath();
-            evt.preventDefault();
-            return;
-          }
+      if (tryStartCropSelection({ self: this, evt, p, overlay, drawOverlayPath })) return;
 
-      // iPad pen workflow: tapping multiple shapes *adds* them to selection (no toggle-off).
-      if (evt.pointerType === 'pen') {
-        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-        const layer = layers[clipIdx];
-        const groupId = layer && typeof layer.groupId === 'string' && layer.groupId.trim() ? layer.groupId.trim() : '';
-        const selected = this.selectedLayerIndices instanceof Set ? this.selectedLayerIndices : new Set();
-        const isAlreadySelected = selected.has(clipIdx);
-
-        if (!isAlreadySelected) {
-          const next = new Set(selected);
-          if (groupId) {
-            for (let i = 0; i < layers.length; i++) {
-              const l = layers[i];
-              if (l && typeof l.groupId === 'string' && l.groupId === groupId) next.add(i);
-            }
-          } else {
-            next.add(clipIdx);
-          }
-          this.selectedLayerIndices = next;
-        }
-
-        // Always make the tapped layer active.
-        this.setActiveLayerIndex(clipIdx);
-        this.syncActiveShapeToLayerIndex(clipIdx);
-      } else {
-        this.setLayerSelectionSingle(clipIdx);
-      }
-          this.renderLayersList();
-          drawOverlayPath();
-
-      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-      const clickedLayer = layers[clipIdx];
-      const clickedClipN = clickedLayer && Array.isArray(clickedLayer.clipPathN) && clickedLayer.clipPathN.length >= 3 ? clickedLayer.clipPathN : null;
-
-      // Start resizing if the user grabbed the shape handle.
-      const handleBounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
-			const handle = getClipHandleAtPoint(handleBounds, p[0], p[1]);
-			if (handle) {
-				this.isResizingShape = true;
-				this.shapeResizePointerId = evt.pointerId;
-        this.shapeResizeLayerIndex = clipIdx;
-        // Multi-select support: scale all selected clip layers together.
-        const selectedIndices = typeof this.getSelectedLayerIndices === 'function' ? this.getSelectedLayerIndices() : [];
-        const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-        this.shapeResizeTargetIndices = selectedIndices
-          .filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length)
-          .filter((i) => {
-            const layer = layers[i];
-            return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
-          });
-        if (!Array.isArray(this.shapeResizeTargetIndices) || this.shapeResizeTargetIndices.length === 0) {
-          this.shapeResizeTargetIndices = [clipIdx];
-        }
-        this.shapeResizeStartClipByIndex = new Map();
-        for (const i of this.shapeResizeTargetIndices) {
-          const layer = layers[i];
-          if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
-          this.shapeResizeStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
-        }
-				this.shapeResizeStartPos = p;
-        this.shapeResizeStartClipPathN = clickedClipN ? clickedClipN.map((q) => [q[0], q[1]]) : (Array.isArray(this.activeClipPathN)
-          ? this.activeClipPathN.map((q) => [q[0], q[1]])
-          : null);
-				this.shapeResizeStartBounds = handleBounds;
-				this.shapeResizeStartDist = handleBounds ? Math.max(0.000001, Math.hypot(p[0] - handleBounds.cx, p[1] - handleBounds.cy)) : 0.000001;
-				overlay.setPointerCapture(evt.pointerId);
-				overlay.style.cursor = 'nwse-resize';
-				evt.preventDefault();
-				return;
-			}
-
-          // Start dragging the selected shape.
-          const polyPx = getClipPolyPxForLayerIndex(clipIdx);
-          if (polyPx && pointInPolygon(p[0], p[1], polyPx)) {
-            this.isDraggingShape = true;
-            this.dragPointerId = evt.pointerId;
-            this.dragLayerIndex = clipIdx;
-            this.dragStartPos = p;
-      this.dragStartClipPathN = clickedClipN ? clickedClipN.map((q) => [q[0], q[1]]) : (Array.isArray(this.activeClipPathN)
-        ? this.activeClipPathN.map((q) => [q[0], q[1]])
-        : null);
-			// Multi-select: move all selected clip layers together.
-			const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-			const selected = this.getSelectedLayerIndices();
-			this.dragTargetIndices = selected.filter((i) => {
-				const layer = layers[i];
-				return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
-			});
-			if (!Array.isArray(this.dragTargetIndices) || this.dragTargetIndices.length === 0) this.dragTargetIndices = [clipIdx];
-			this.dragStartClipByIndex = new Map();
-			for (const i of this.dragTargetIndices) {
-				const layer = layers[i];
-				if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
-				this.dragStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
-			}
-            this.dragPendingPos = p;
-            overlay.setPointerCapture(evt.pointerId);
-            overlay.style.cursor = 'grabbing';
-            evt.preventDefault();
-            return;
-          }
-        }
-      }
-
-      if (this.toolMode === 'crop') {
-        this.isCropping = true;
-        this.cropPointerId = evt.pointerId;
-        this.cropStartPos = p;
-        this.cropPendingPos = p;
-        this.cropRectPx = { x: p[0], y: p[1], w: 0, h: 0 };
-        overlay.setPointerCapture(evt.pointerId);
-        overlay.style.cursor = 'crosshair';
-        drawOverlayPath();
-        evt.preventDefault();
-        return;
-      }
-
-      // If a clipped layer is selected and the user clicks inside its shape,
-      // we drag the shape instead of starting a new drawing.
-      const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
-      const canDragSelection = interactionMode === 'select' && hasActiveClip;
-      if (canDragSelection) {
-    const handleBounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
-    const handle = getClipHandleAtPoint(handleBounds, p[0], p[1]);
-    if (handle) {
-      this.isResizingShape = true;
-      this.shapeResizePointerId = evt.pointerId;
-      this.shapeResizeLayerIndex = this.activeLayerIndex;
-      // Multi-select support: scale all selected clip layers together.
-      const selectedIndices = typeof this.getSelectedLayerIndices === 'function' ? this.getSelectedLayerIndices() : [];
-      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-      this.shapeResizeTargetIndices = selectedIndices
-        .filter((i) => Number.isFinite(i) && i >= 0 && i < layers.length)
-        .filter((i) => {
-          const layer = layers[i];
-          return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
-        });
-      if (!Array.isArray(this.shapeResizeTargetIndices) || this.shapeResizeTargetIndices.length === 0) {
-        this.shapeResizeTargetIndices = [this.activeLayerIndex];
-      }
-      this.shapeResizeStartClipByIndex = new Map();
-      for (const i of this.shapeResizeTargetIndices) {
-        const layer = layers[i];
-        if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
-        this.shapeResizeStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
-      }
-      this.shapeResizeStartPos = p;
-      this.shapeResizeStartClipPathN = this.activeClipPathN.map((q) => [q[0], q[1]]);
-      this.shapeResizeStartBounds = handleBounds;
-      this.shapeResizeStartDist = handleBounds ? Math.max(0.000001, Math.hypot(p[0] - handleBounds.cx, p[1] - handleBounds.cy)) : 0.000001;
-      overlay.setPointerCapture(evt.pointerId);
-      overlay.style.cursor = 'nwse-resize';
-      evt.preventDefault();
-      return;
-    }
-
-        const { w, h } = getOverlaySize();
-        const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
-        if (pointInPolygon(p[0], p[1], polyPx)) {
-          this.isDraggingShape = true;
-          this.dragPointerId = evt.pointerId;
-          this.dragLayerIndex = this.activeLayerIndex;
-          this.dragStartPos = p;
-          this.dragStartClipPathN = this.activeClipPathN.map((q) => [q[0], q[1]]);
-      // Multi-select: move all selected clip layers together.
-      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-      const selected = this.getSelectedLayerIndices();
-      this.dragTargetIndices = selected.filter((i) => {
-        const layer = layers[i];
-        return layer && Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
-      });
-      if (!Array.isArray(this.dragTargetIndices) || this.dragTargetIndices.length === 0) this.dragTargetIndices = [this.activeLayerIndex];
-      this.dragStartClipByIndex = new Map();
-      for (const i of this.dragTargetIndices) {
-        const layer = layers[i];
-        if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
-        this.dragStartClipByIndex.set(i, layer.clipPathN.map((q) => [q[0], q[1]]));
-      }
-          this.dragPendingPos = p;
-          overlay.setPointerCapture(evt.pointerId);
-          overlay.style.cursor = 'grabbing';
-          evt.preventDefault();
-          return;
-        }
-      }
+      if (tryStartActiveSelectionInteraction({
+        self: this,
+        evt,
+        p,
+        interactionMode,
+        overlay,
+        getOverlaySize,
+        getSelectedClipBoundsPx,
+        getClipBoundsPxForClipN,
+        getClipHandleAtPoint,
+        pointInPolygon,
+      })) return;
 
       // Background click always clears selection.
-      this.setLayerSelectionSingle(-1);
-      this.renderLayersList();
-      drawOverlayPath();
+      if (tryStartBoxSelection({
+        self: this,
+        evt,
+        p,
+        interactionMode,
+        overlay,
+        drawOverlayPath,
+      })) return;
 
-      // In Selecteren mode, background click should not start drawing.
-      if (interactionMode === 'select') {
-        evt.preventDefault();
-        return;
-      }
-
-      this.isDrawing = true;
-      this.drawPointerId = evt.pointerId;
-      overlay.setPointerCapture(evt.pointerId);
-
-      this.drawPath = [p];
-      drawOverlayPath();
-	  evt.preventDefault();
+	  startDrawStroke({
+		self: this,
+		evt,
+		p,
+		overlay,
+		drawOverlayPath,
+	  });
     });
 
     overlay.addEventListener('pointermove', (evt) => {
@@ -6560,507 +6497,82 @@ class SavedImagesDB {
         return;
       }
 
-      if (this.isCropping) {
-        if (this.cropPointerId !== evt.pointerId) return;
-        if (!Array.isArray(this.cropStartPos) || this.cropStartPos.length < 2) return;
-        this.cropPendingPos = p;
-        const x0 = this.cropStartPos[0];
-        const y0 = this.cropStartPos[1];
-        const x1 = p[0];
-        const y1 = p[1];
-        const rx = Math.min(x0, x1);
-        const ry = Math.min(y0, y1);
-        const rw = Math.abs(x1 - x0);
-        const rh = Math.abs(y1 - y0);
-        this.cropRectPx = { x: rx, y: ry, w: rw, h: rh };
-        drawOverlayPath();
-        evt.preventDefault();
-        return;
-      }
+      if (tryUpdateCroppingPreview({ self: this, evt, p, drawOverlayPath })) return;
 
-      if (this.isDraggingShape) {
-        if (this.dragPointerId !== evt.pointerId) return;
-        this.dragPendingPos = p;
+      if (handlePointerMoveDraggingShape({
+        self: this,
+        evt,
+        p,
+        getOverlaySize,
+        drawOverlayPath,
+      })) return;
 
-        if (!this.dragRaf) {
-          this.dragRaf = window.requestAnimationFrame(() => {
-            this.dragRaf = 0;
-            if (!this.isDraggingShape) return;
-            if (!Array.isArray(this.dragStartPos) || this.dragStartPos.length < 2) return;
-            if (!Array.isArray(this.dragPendingPos) || this.dragPendingPos.length < 2) return;
+    if (handlePointerMoveResizingShape({
+      self: this,
+      evt,
+      p,
+      drawOverlayPath,
+      getClipBoundsPxForClipN,
+    })) return;
 
-			const movedIndices = Array.isArray(this.dragTargetIndices) && this.dragTargetIndices.length ? this.dragTargetIndices : [];
-			const hasLayerStarts = this.dragStartClipByIndex instanceof Map && movedIndices.length;
-			if (!hasLayerStarts) {
-				if (!Array.isArray(this.dragStartClipPathN) || this.dragStartClipPathN.length < 3) return;
-			}
+    if (handlePointerMoveDraggingImage({
+      self: this,
+      evt,
+      p,
+      getOverlaySize,
+      drawOverlayPath,
+      getImagePaintForLayerIndex,
+    })) return;
 
-            const { w, h } = getOverlaySize();
-            const dx = this.dragPendingPos[0] - this.dragStartPos[0];
-            const dy = this.dragPendingPos[1] - this.dragStartPos[1];
-            let dxN = dx / w;
-            let dyN = dy / h;
+      if (handlePointerMoveDraggingFreehand({
+        self: this,
+        evt,
+        p,
+        getOverlaySize,
+        drawOverlayPath,
+        getFreehandPaintForLayerIndex,
+      })) return;
 
+      if (tryUpdateBoxSelectionPreview({ self: this, evt, p, normalizeRectPx, drawOverlayPath })) return;
+      if (tryAppendDrawPathPoint({ self: this, evt, p, minDist, drawOverlayPath })) return;
 
-      // Clamp translation against the global bounds of all moved shapes.
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      if (this.dragStartClipByIndex instanceof Map && movedIndices.length) {
-        for (const idx of movedIndices) {
-          const clipN = this.dragStartClipByIndex.get(idx);
-          if (!Array.isArray(clipN) || clipN.length < 3) continue;
-          for (const q of clipN) {
-            if (!Array.isArray(q) || q.length < 2) continue;
-            if (q[0] < minX) minX = q[0];
-            if (q[1] < minY) minY = q[1];
-            if (q[0] > maxX) maxX = q[0];
-            if (q[1] > maxY) maxY = q[1];
-          }
-        }
-      } else {
-        for (const q of this.dragStartClipPathN) {
-          if (!Array.isArray(q) || q.length < 2) continue;
-          if (q[0] < minX) minX = q[0];
-          if (q[1] < minY) minY = q[1];
-          if (q[0] > maxX) maxX = q[0];
-          if (q[1] > maxY) maxY = q[1];
-        }
-      }
-
-      if ([minX, minY, maxX, maxY].every(Number.isFinite)) {
-        const minDx = -minX;
-        const maxDx = 1 - maxX;
-        const minDy = -minY;
-        const maxDy = 1 - maxY;
-        dxN = Math.max(minDx, Math.min(maxDx, dxN));
-        dyN = Math.max(minDy, Math.min(maxDy, dyN));
-      }
-
-      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-      let updatedActive = false;
-      if (this.dragStartClipByIndex instanceof Map && movedIndices.length) {
-        for (const idx of movedIndices) {
-          const layer = layers[idx];
-          const clipN = this.dragStartClipByIndex.get(idx);
-          if (!layer || !Array.isArray(clipN) || clipN.length < 3) continue;
-          const nextClipN = clipN
-            .map((q) => [q[0] + dxN, q[1] + dyN])
-            .filter((q) => Array.isArray(q) && q.length === 2);
-          if (nextClipN.length < 3) continue;
-          const nextKey = this.makeClipKey(nextClipN);
-          layer.clipPathN = nextClipN;
-          layer.clipKey = nextKey;
-          if (idx === this.dragLayerIndex || idx === this.activeLayerIndex) {
-            this.activeClipPathN = nextClipN.slice();
-            this.activeClipKey = nextKey;
-            updatedActive = true;
-          }
-        }
-
-        this.canvasLayers.redrawAllLayers();
-        drawOverlayPath();
-        return;
-      }
-
-      // Free selection (no layer): move only the active selection.
-      const nextClipN = this.dragStartClipPathN
-        .map((q) => [q[0] + dxN, q[1] + dyN])
-        .filter((q) => Array.isArray(q) && q.length === 2);
-      if (nextClipN.length < 3) return;
-      const nextKey = this.makeClipKey(nextClipN);
-      this.activeClipPathN = nextClipN.slice();
-      this.activeClipKey = nextKey;
-      drawOverlayPath();
-          });
-        }
-
-        evt.preventDefault();
-        return;
-      }
-
-    if (this.isResizingShape) {
-      if (this.shapeResizePointerId !== evt.pointerId) return;
-      if (!Array.isArray(this.shapeResizeStartClipPathN) || this.shapeResizeStartClipPathN.length < 3) return;
-      const startBounds = this.shapeResizeStartBounds || getClipBoundsPxForClipN(this.shapeResizeStartClipPathN);
-      if (!startBounds) return;
-      const startDist = Number.isFinite(this.shapeResizeStartDist) ? this.shapeResizeStartDist : 0.000001;
-      const curDist = Math.max(0.000001, Math.hypot(p[0] - startBounds.cx, p[1] - startBounds.cy));
-      let factor = curDist / startDist;
-      if (!(Number.isFinite(factor) && factor > 0)) return;
-
-      const layers = this.canvasLayers && Array.isArray(this.canvasLayers.layers) ? this.canvasLayers.layers : [];
-      const targets = Array.isArray(this.shapeResizeTargetIndices) && this.shapeResizeTargetIndices.length
-        ? this.shapeResizeTargetIndices
-        : [Number.isFinite(this.shapeResizeLayerIndex) ? this.shapeResizeLayerIndex : -1];
-
-      // Collect all start points to compute a shared center and global clamps.
-      const startClips = [];
-      for (const idx of targets) {
-        if (!(Number.isFinite(idx) && idx >= 0 && idx < layers.length)) continue;
-        const baseClip = this.shapeResizeStartClipByIndex instanceof Map ? this.shapeResizeStartClipByIndex.get(idx) : null;
-        if (Array.isArray(baseClip) && baseClip.length >= 3) startClips.push(baseClip);
-      }
-
-      // Fallback: free selection (no layer)
-      if (startClips.length === 0) startClips.push(this.shapeResizeStartClipPathN);
-
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (const clipN of startClips) {
-        if (!Array.isArray(clipN) || clipN.length < 3) continue;
-        for (const q of clipN) {
-          if (!Array.isArray(q) || q.length < 2) continue;
-          const x = Number(q[0]);
-          const y = Number(q[1]);
-          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-
-      if (![minX, minY, maxX, maxY].every(Number.isFinite)) return;
-      const cxN = (minX + maxX) / 2;
-      const cyN = (minY + maxY) / 2;
-      const curW = Math.max(0.000001, maxX - minX);
-      const curH = Math.max(0.000001, maxY - minY);
-
-      const minDim = 0.03;
-      const minFactor = Math.max(minDim / curW, minDim / curH);
-      if (factor < minFactor) factor = minFactor;
-
-      if (factor > 1) {
-        let maxFactor = Infinity;
-        for (const clipN of startClips) {
-          if (!Array.isArray(clipN) || clipN.length < 3) continue;
-          for (const q of clipN) {
-            if (!Array.isArray(q) || q.length < 2) continue;
-            const dx = Number(q[0]) - cxN;
-            const dy = Number(q[1]) - cyN;
-            if (!Number.isFinite(dx) || !Number.isFinite(dy)) continue;
-            if (dx > 0) maxFactor = Math.min(maxFactor, (1 - cxN) / dx);
-            else if (dx < 0) maxFactor = Math.min(maxFactor, (0 - cxN) / dx);
-            if (dy > 0) maxFactor = Math.min(maxFactor, (1 - cyN) / dy);
-            else if (dy < 0) maxFactor = Math.min(maxFactor, (0 - cyN) / dy);
-          }
-        }
-        if (Number.isFinite(maxFactor) && maxFactor > 0) factor = Math.min(factor, maxFactor);
-      }
-
-      let changedAny = false;
-      for (const idx of targets) {
-        if (!(Number.isFinite(idx) && idx >= 0 && idx < layers.length)) continue;
-        const layer = layers[idx];
-        if (!layer || !Array.isArray(layer.clipPathN) || layer.clipPathN.length < 3) continue;
-        const baseClip = this.shapeResizeStartClipByIndex instanceof Map ? this.shapeResizeStartClipByIndex.get(idx) : null;
-        const startClip = Array.isArray(baseClip) && baseClip.length >= 3 ? baseClip : layer.clipPathN;
-
-        const nextClipN = startClip
-          .map((q) => [clamp01(cxN + (Number(q[0]) - cxN) * factor), clamp01(cyN + (Number(q[1]) - cyN) * factor)])
-          .filter((q) => Array.isArray(q) && q.length === 2);
-        if (nextClipN.length < 3) continue;
-
-        const nextKey = this.makeClipKey(nextClipN);
-        layer.clipPathN = nextClipN;
-        layer.clipKey = nextKey;
-        changedAny = true;
-        if (typeof this.canvasLayers.scheduleVisibleColorsCompute === 'function') {
-          this.canvasLayers.scheduleVisibleColorsCompute(idx).catch(() => {});
-        }
-
-        if (idx === this.activeLayerIndex || idx === this.shapeResizeLayerIndex) {
-          this.activeClipPathN = nextClipN.slice();
-          this.activeClipKey = nextKey;
-        }
-      }
-
-      if (!changedAny && Array.isArray(this.shapeResizeStartClipPathN) && this.shapeResizeStartClipPathN.length >= 3) {
-        const nextClipN = this.shapeResizeStartClipPathN
-          .map((q) => [clamp01(cxN + (Number(q[0]) - cxN) * factor), clamp01(cyN + (Number(q[1]) - cyN) * factor)])
-          .filter((q) => Array.isArray(q) && q.length === 2);
-        if (nextClipN.length >= 3) {
-          const nextKey = this.makeClipKey(nextClipN);
-          this.activeClipPathN = nextClipN.slice();
-          this.activeClipKey = nextKey;
-          changedAny = true;
-        }
-      }
-
-      if (changedAny) {
-        this.canvasLayers.redrawAllLayers();
-        this.renderLayersList();
-        drawOverlayPath();
-      }
-      evt.preventDefault();
-      return;
-    }
-
-    if (this.isDraggingImage) {
-    if (this.imagePointerId !== evt.pointerId) return;
-    if (!Array.isArray(this.imageStartPos) || this.imageStartPos.length < 2) return;
-    if (!this.imageStartPlacement) return;
-    const idx = this.imageLayerIndex;
-    if (idx < 0) return;
-
-    const paint = getImagePaintForLayerIndex(idx);
-    if (!paint) return;
-
-    const { w, h } = getOverlaySize();
-    const dx = p[0] - this.imageStartPos[0];
-    const dy = p[1] - this.imageStartPos[1];
-    let xN = this.imageStartPlacement.xN;
-    let yN = this.imageStartPlacement.yN;
-    let wN = this.imageStartPlacement.wN;
-    let hN = this.imageStartPlacement.hN;
-
-    if (this.imageDragMode === 'move') {
-      xN = xN + dx / w;
-      yN = yN + dy / h;
-      xN = Math.max(0, Math.min(1 - wN, xN));
-      yN = Math.max(0, Math.min(1 - hN, yN));
-    } else if (this.imageDragMode === 'resize') {
-      const minN = 0.03;
-      const aspect = hN > 0.0001 ? wN / hN : 1;
-      const delta = Math.abs(dx / w) > Math.abs(dy / h) ? dx / w : dy / h;
-      let nextW = wN + delta;
-      nextW = Math.max(minN, Math.min(1, nextW));
-      let nextH = aspect > 0.0001 ? nextW / aspect : nextW;
-      nextH = Math.max(minN, Math.min(1, nextH));
-      // keep top-left fixed; clamp within canvas
-      if (xN + nextW > 1) nextW = Math.max(minN, 1 - xN);
-      if (aspect > 0.0001) nextH = Math.max(minN, nextW / aspect);
-      if (yN + nextH > 1) nextH = Math.max(minN, 1 - yN);
-      wN = nextW;
-      hN = nextH;
-    }
-
-    paint.xN = clamp01(xN);
-    paint.yN = clamp01(yN);
-    paint.wN = clamp01(wN);
-    paint.hN = clamp01(hN);
-
-    this.canvasLayers.redrawAllLayers();
-    drawOverlayPath();
-    evt.preventDefault();
-    return;
-    }
-
-      if (this.isDrawing) {
-        if (this.drawPointerId !== evt.pointerId) return;
-
-        const last = this.drawPath[this.drawPath.length - 1];
-        const dx = p[0] - last[0];
-        const dy = p[1] - last[1];
-        if (Math.hypot(dx, dy) < minDist) return;
-
-        this.drawPath.push(p);
-        drawOverlayPath();
-		evt.preventDefault();
-        return;
-      }
-
-      // Hover cursor hint when a shape is selected.
-      const hasActiveClip = Array.isArray(this.activeClipPathN) && this.activeClipPathN.length >= 3;
-      if (this.activeLayerIndex >= 0) {
-		const imgRect = getImageRectPxForLayerIndex(this.activeLayerIndex);
-		if (imgRect) {
-			const handle = getImageHandleAtPoint(imgRect, p[0], p[1]);
-			const inside = p[0] >= imgRect.x && p[0] <= imgRect.x + imgRect.w && p[1] >= imgRect.y && p[1] <= imgRect.y + imgRect.h;
-			overlay.style.cursor = handle ? 'nwse-resize' : inside ? 'move' : 'crosshair';
-			return;
-		}
-	  }
-
-  		if (this.interactionMode === 'select' && this.activeLayerIndex >= 0 && hasActiveClip) {
-        const { w, h } = getOverlaySize();
-        const polyPx = this.activeClipPathN.map((q) => [q[0] * w, q[1] * h]);
-  		const bounds = getSelectedClipBoundsPx() || getClipBoundsPxForClipN(this.activeClipPathN);
-    const handle = getClipHandleAtPoint(bounds, p[0], p[1]);
-    overlay.style.cursor = handle ? 'nwse-resize' : pointInPolygon(p[0], p[1], polyPx) ? 'move' : 'crosshair';
-      } else {
-        overlay.style.cursor = 'crosshair';
-      }
+      updatePointerHoverCursor({
+        self: this,
+        p,
+        overlay,
+        getOverlaySize,
+        getImageRectPxForLayerIndex,
+        getImageHandleAtPoint,
+        hitTestTopmostFreehandLayer,
+        getSelectedClipBoundsPx,
+        getClipBoundsPxForClipN,
+        getClipHandleAtPoint,
+        pointInPolygon,
+      });
     });
 
     const finish = (evt) => {
-      if (this.isCropping) {
-        if (this.cropPointerId !== evt.pointerId) return;
-        this.isCropping = false;
-        this.cropPointerId = null;
+      if (tryFinishCropping({
+        self: this,
+        evt,
+        overlay,
+        getOverlaySize,
+        clamp01,
+        drawOverlayPath,
+      })) return;
 
-        const start = this.cropStartPos;
-        const end = this.cropPendingPos;
-        this.cropStartPos = null;
-        this.cropPendingPos = null;
-
-        const { w, h } = getOverlaySize();
-
-        let cropCanvas = null;
-        if (Array.isArray(start) && Array.isArray(end)) {
-          const x0 = Math.min(start[0], end[0]);
-          const y0 = Math.min(start[1], end[1]);
-          const x1 = Math.max(start[0], end[0]);
-          const y1 = Math.max(start[1], end[1]);
-          const rw = x1 - x0;
-          const rh = y1 - y0;
-          const minPx = 6;
-
-          if (rw >= minPx && rh >= minPx) {
-            this.cropRectN = {
-              x: clamp01(x0 / w),
-              y: clamp01(y0 / h),
-              w: clamp01(rw / w),
-              h: clamp01(rh / h),
-            };
-            // Maak direct een crop-canvas en vervang de lagen
-            cropCanvas = document.createElement('canvas');
-            cropCanvas.width = Math.round(rw);
-            cropCanvas.height = Math.round(rh);
-            const ctx = cropCanvas.getContext('2d');
-            if (ctx && this.canvas instanceof HTMLCanvasElement) {
-              ctx.drawImage(this.canvas, x0, y0, rw, rh, 0, 0, rw, rh);
-              if (typeof this.applyCropResultToLayers === 'function') {
-
-                this.applyCropResultToLayers(cropCanvas);
-              } else {
-                console.error('[FOUT] applyCropResultToLayers is geen functie op', this);
-              }
-            }
-          }
-        }
-
-        this.cropRectPx = null;
-        this.toolMode = 'draw';
-        overlay.style.cursor = 'crosshair';
-        drawOverlayPath();
-        evt.preventDefault();
-        return;
-      // --- Toevoeging: na croppen, maak PNG, wis lagen, zet PNG als enige laag ---
-      // Dit hoort direct na het afronden van de crop-actie, niet bij opslaan
-      MenuClassOrObject.prototype.applyCropResultToLayers = function(cropCanvas) {
-
-        if (!cropCanvas) return;
-        try {
-          const dataUrl = cropCanvas.toDataURL('image/png');
-          // Wis alle lagen
-          if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
-            this.canvasLayers.clearAllLayers();
-          }
-          // Maak nieuwe Image-laag
-          const img = new window.Image();
-          img.onload = () => {
-            if (this.canvasLayers && typeof this.canvasLayers.layers === 'object') {
-              const layer = {
-                kind: 'image',
-                image: img,
-                w: cropCanvas.width,
-                h: cropCanvas.height,
-                x: 0,
-                y: 0,
-                isBackground: true
-              };
-              this.canvasLayers.layers = [layer];
-              if (typeof this.canvasLayers.redrawAllLayers === 'function') {
-                this.canvasLayers.redrawAllLayers();
-              }
-            }
-          };
-          img.src = dataUrl;
-        } catch (e) {
-          console.error('[FOUT] applyCropResultToLayers error', e);
-        }
-      };
-      }
-
-      if (this.isDraggingShape) {
-        if (this.dragPointerId !== evt.pointerId) return;
-        this.isDraggingShape = false;
-        this.dragPointerId = null;
-        this.dragLayerIndex = -1;
-        this.dragStartPos = null;
-        this.dragStartClipPathN = null;
-        this.dragPendingPos = null;
-		this.dragTargetIndices = null;
-		this.dragStartClipByIndex = null;
-        if (this.dragRaf) {
-          window.cancelAnimationFrame(this.dragRaf);
-          this.dragRaf = 0;
-        }
-        overlay.style.cursor = 'crosshair';
-        evt.preventDefault();
-        return;
-      }
-
-    if (this.isResizingShape) {
-      if (this.shapeResizePointerId !== evt.pointerId) return;
-      this.isResizingShape = false;
-      this.shapeResizePointerId = null;
-      this.shapeResizeLayerIndex = -1;
-      this.shapeResizeStartPos = null;
-      this.shapeResizeStartClipPathN = null;
-      this.shapeResizeStartBounds = null;
-      this.shapeResizeStartDist = 0;
-      this.shapeResizeTargetIndices = null;
-      this.shapeResizeStartClipByIndex = null;
-      overlay.style.cursor = 'crosshair';
-      evt.preventDefault();
-      return;
-    }
-
-    if (this.isDraggingImage) {
-    if (this.imagePointerId !== evt.pointerId) return;
-    this.isDraggingImage = false;
-    this.imagePointerId = null;
-    this.imageLayerIndex = -1;
-    this.imageDragMode = '';
-    this.imageStartPos = null;
-    this.imageStartPlacement = null;
-    overlay.style.cursor = 'crosshair';
-    evt.preventDefault();
-    return;
-    }
-
-      if (!this.isDrawing) return;
-      if (this.drawPointerId !== evt.pointerId) return;
-
-      this.isDrawing = false;
-      this.drawPointerId = null;
-
-      const path = Array.isArray(this.drawPath) ? this.drawPath.slice() : [];
-      this.drawPath = [];
-      if (path.length < 2) return;
-
-      const rect = overlay.getBoundingClientRect();
-      const w = Math.max(1, rect.width);
-      const h = Math.max(1, rect.height);
-      const pathN = path
-        .map((p) => [Math.max(0, Math.min(1, p[0] / w)), Math.max(0, Math.min(1, p[1] / h))])
-        .filter((p) => Array.isArray(p) && p.length === 2);
-
-      if (this.toolMode === 'free-draw') {
-        // Tekenen: open vrije lijn met gekozen kleur en dikte.
-        if (Array.isArray(pathN) && pathN.length >= 2 && this.canvasLayers && typeof this.canvasLayers.addFreehandLineLayer === 'function') {
-          this.canvasLayers.addFreehandLineLayer(pathN, this.currentColor, this.currentThickness);
-          this.renderLayersList();
-        }
-      } else {
-        // Vormen: maak een gesloten vorm en vul die via de bestaande shape-flow.
-        if (Array.isArray(pathN) && pathN.length >= 3) {
-          this.activeClipPathN = pathN.slice();
-          this.activeClipKey = this.makeClipKey(this.activeClipPathN);
-          this.activeClipPathsN = null;
-          this.applyToActiveShape();
-          this.renderLayersList();
-        }
-      }
-
-      drawOverlayPath();
-      evt.preventDefault();
+      if (tryFinishDraggingShape({ self: this, evt, overlay })) return;
+      if (tryFinishResizingShape({ self: this, evt, overlay })) return;
+      if (tryFinishDraggingImage({ self: this, evt, overlay })) return;
+      if (tryFinishDraggingFreehand({ self: this, evt, overlay })) return;
+      if (tryFinishBoxSelection({
+        self: this,
+        evt,
+        overlay,
+        collectLayerIndicesInRect,
+        drawOverlayPath,
+      })) return;
+      if (tryFinishDrawing({ self: this, evt, overlay, drawOverlayPath })) return;
     };
 
     overlay.addEventListener('pointerup', finish);
