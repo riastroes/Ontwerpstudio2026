@@ -1,149 +1,32 @@
-'use strict';
 
-(function () {
-  const NS = (window.Ontwerpstudio2026 = window.Ontwerpstudio2026 || {});
-
-  const APP_ID = 'Ontwerpstudio2026';
-  const LEGACY_APP_ID = 'Patronen2026';
-
-  function dbExists(name) {
-    try {
-      if (!('indexedDB' in window)) return Promise.resolve(false);
-      if (typeof indexedDB.databases !== 'function') return Promise.resolve(true);
-      return indexedDB
-        .databases()
-        .then((dbs) => Array.isArray(dbs) && dbs.some((d) => d && d.name === name))
-        .catch(() => true);
-    } catch (_) {
-      return Promise.resolve(true);
-    }
-  }
-
-  function openDb(name, version, onUpgrade) {
-    return new Promise((resolve, reject) => {
-      if (!('indexedDB' in window)) {
-        reject(new Error('IndexedDB not available'));
-        return;
-      }
-
-      const req = indexedDB.open(name, version);
-      req.onupgradeneeded = () => {
-        try {
-          if (typeof onUpgrade === 'function') onUpgrade(req.result);
-        } catch (_) {}
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error('Failed to open IndexedDB'));
-    });
-  }
-
-  function getAllFromDb(db, storeName) {
-    return new Promise((resolve, reject) => {
-      try {
-        if (!db.objectStoreNames.contains(storeName)) {
-          resolve([]);
-          return;
-        }
-        const tx = db.transaction(storeName, 'readonly');
-        const store = tx.objectStore(storeName);
-        const req = store.getAll();
-        req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
-        req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
-      } catch (e) {
-        reject(e);
-      }
-    });
-  }
-
-  function putManyToDb(db, storeName, items) {
-    const list = Array.isArray(items) ? items : [];
-    if (list.length === 0) return Promise.resolve(true);
-    return new Promise((resolve, reject) => {
-      try {
-        const tx = db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        for (const it of list) store.put(it);
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
-      } catch (e) {
-        reject(e);
-      }
-    });
-  }
-
-  function deleteDb(name) {
-    return new Promise((resolve) => {
-      try {
-        const req = indexedDB.deleteDatabase(name);
-        req.onsuccess = () => resolve(true);
-        req.onerror = () => resolve(false);
-        req.onblocked = () => resolve(false);
-      } catch (_) {
-        resolve(false);
-      }
-    });
-  }
-
-  function qs(id) {
-    return document.getElementById(id);
-  }
-
-  function normalizeCssColorString(color) {
-    const tmp = document.createElement('div');
-    tmp.style.color = typeof color === 'string' ? color : '';
-    document.body.appendChild(tmp);
-    const out = getComputedStyle(tmp).color;
-    document.body.removeChild(tmp);
-    return out;
-  }
-
-  function parseCssRgbString(color) {
-    const s = typeof color === 'string' ? color.trim() : '';
-    if (!s) return null;
-    const m = s.match(/rgba?\(([^)]+)\)/i);
-    if (!m) return null;
-    const parts = m[1].split(',').map((p) => p.trim());
-    if (parts.length < 3) return null;
-    const r = Number(parts[0]);
-    const g = Number(parts[1]);
-    const b = Number(parts[2]);
-    if (![r, g, b].every((v) => Number.isFinite(v))) return null;
-    return {
-      r: Math.max(0, Math.min(255, Math.round(r))),
-      g: Math.max(0, Math.min(255, Math.round(g))),
-      b: Math.max(0, Math.min(255, Math.round(b))),
+const APP_ID = 'Ontwerpstudio2026';
+const LEGACY_APP_ID = 'Ontwerpstudio2026-v1';
+// Controleer of een IndexedDB database bestaat
+function dbExists(name) {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(name);
+    let existed = true;
+    req.onupgradeneeded = () => {
+      existed = false;
     };
-  }
-
-  function rgbaCssFromRgb(rgb, alpha) {
-    const a = Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : 1;
-    const r = rgb && Number.isFinite(rgb.r) ? Math.max(0, Math.min(255, Math.round(rgb.r))) : 0;
-    const g = rgb && Number.isFinite(rgb.g) ? Math.max(0, Math.min(255, Math.round(rgb.g))) : 0;
-    const b = rgb && Number.isFinite(rgb.b) ? Math.max(0, Math.min(255, Math.round(rgb.b))) : 0;
-    return `rgba(${r}, ${g}, ${b}, ${a})`;
-  }
-
-  function mixRgb(a, b, t) {
-    const tt = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : 0;
-    const ar = a && Number.isFinite(a.r) ? a.r : 0;
-    const ag = a && Number.isFinite(a.g) ? a.g : 0;
-    const ab = a && Number.isFinite(a.b) ? a.b : 0;
-    const br = b && Number.isFinite(b.r) ? b.r : 0;
-    const bg = b && Number.isFinite(b.g) ? b.g : 0;
-    const bb = b && Number.isFinite(b.b) ? b.b : 0;
-    return {
-      r: ar + (br - ar) * tt,
-      g: ag + (bg - ag) * tt,
-      b: ab + (bb - ab) * tt,
+    req.onsuccess = () => {
+      req.result.close();
+      if (!existed) {
+        indexedDB.deleteDatabase(name);
+      }
+      resolve(existed);
     };
-  }
+    req.onerror = () => resolve(false);
+  });
+}
 
-  function tintRgb(rgb, tone) {
-    const t = Number.isFinite(tone) ? Math.max(-1, Math.min(1, tone)) : 0;
-    if (t === 0) return rgb;
-    if (t > 0) return mixRgb(rgb, { r: 255, g: 255, b: 255 }, t);
-    return mixRgb(rgb, { r: 0, g: 0, b: 0 }, -t);
-  }
+// Normaliseer CSS kleurstring (spaties weg, lowercase)
+function normalizeCssColorString(str) {
+  return (typeof str === 'string' ? str.trim().toLowerCase() : '');
+}
+import { qs } from './menu/ui.js';
+
+// ES6 module entry: alle logica is nu opgesplitst in modules.
 
   function hashStringToSeed(str) {
     const s = typeof str === 'string' ? str : '';
@@ -154,6 +37,8 @@
     }
     return h >>> 0;
   }
+
+// --- UI Controllers ---
 
   function makeRng(seed) {
     let x = Number.isFinite(seed) ? (seed >>> 0) : 1;
@@ -383,52 +268,52 @@
     }
   }
 
-  class MenuController {
+// --- UI Controllers ---
+
+class MenuController {
     constructor(options) {
       this.toggle = qs('menuToggle');
       this.nav = qs('topnav');
       this.onRightViewSelect = options && typeof options.onRightViewSelect === 'function' ? options.onRightViewSelect : null;
-      this.onAction = options && typeof options.onAction === 'function' ? options.onAction : null;
+      this.qs = qs;
+      this.bindEvents();
     }
-
-    init() {
-      if (!(this.toggle instanceof HTMLElement)) return;
-      if (!(this.nav instanceof HTMLElement)) return;
-      if (this.toggle.dataset.bound === '1') return;
-      this.toggle.dataset.bound = '1';
-
+  
+    bindEvents() {
       this.toggle.addEventListener('click', () => {
         const isOpen = document.body.classList.toggle('menu-open');
         this.toggle.setAttribute('aria-expanded', String(isOpen));
       });
-
-      // Close collapsed menu when a link is clicked.
+  
       this.nav.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
         if (target.tagName !== 'A') return;
-
+  
         const action = target.dataset ? target.dataset.appAction : '';
         if (action && this.onAction) {
           event.preventDefault();
           this.onAction(action);
         }
-
+  
         const view = target.dataset ? target.dataset.rightView : '';
         if (view && this.onRightViewSelect) {
           event.preventDefault();
           this.onRightViewSelect(view);
         }
-
+  
         if (window.matchMedia('(max-width: 700px)').matches) {
           document.body.classList.remove('menu-open');
           this.toggle.setAttribute('aria-expanded', 'false');
         }
       });
-    }
   }
-
-  class SavedImagesDB {
+}
+// --- IndexedDB Storage ---
+    
+class SavedImagesDB {
+    // ...existing code...
+    
     constructor() {
       this.dbName = APP_ID;
       this.storeName = 'savedImages';
@@ -1546,6 +1431,35 @@
       this.drawSolidToCtx(c.ctx, w, h, color, clipPathN);
     }
 
+    drawFreehandLineToCtx(ctx, w, h, pathN, color, thickness) {
+      if (!ctx) return;
+      if (!Array.isArray(pathN) || pathN.length < 2) return;
+
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+      const t = Number.isFinite(thickness) ? Math.round(thickness) : 1;
+      const lineWidth = Math.max(1, Math.min(100, t));
+
+      const first = pathN[0];
+      if (!Array.isArray(first) || first.length < 2) return;
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = c;
+      ctx.lineWidth = lineWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(first[0] * w, first[1] * h);
+      for (let i = 1; i < pathN.length; i++) {
+        const p = pathN[i];
+        if (!Array.isArray(p) || p.length < 2) continue;
+        ctx.lineTo(p[0] * w, p[1] * h);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
     redrawAllLayers() {
       const c = this.getContext();
       if (!c) return;
@@ -1604,6 +1518,24 @@
             continue;
           }
 
+          if (kind === 'freehand') {
+            const pathN = paint && Array.isArray(paint.pathN) ? paint.pathN : null;
+            const color = paint ? paint.color : undefined;
+            const thickness = paint ? paint.thickness : undefined;
+            this.drawQueue = this.drawQueue
+              .then(() => {
+                this.resizeToCSSPixels();
+                const c2 = this.getContext();
+                if (!c2) return;
+                const rect2 = c2.canvas.getBoundingClientRect();
+                const w2 = Math.max(1, rect2.width);
+                const h2 = Math.max(1, rect2.height);
+                this.drawFreehandLineToCtx(c2.ctx, w2, h2, pathN, color, thickness);
+              })
+              .catch(() => {});
+            continue;
+          }
+
           if (kind === 'texture') {
             const textureId = paint && typeof paint.textureId === 'string' ? paint.textureId : '';
 			const repeatCountRaw = paint ? paint.repeatCount : undefined;
@@ -1648,6 +1580,54 @@
             .catch(() => {});
         }
       }
+    }
+
+    addFreehandLineLayer(pathN, color, thickness) {
+      const safePathN = Array.isArray(pathN)
+        ? pathN
+            .map((p) => {
+              if (!Array.isArray(p) || p.length < 2) return null;
+              const x = Number(p[0]);
+              const y = Number(p[1]);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+              return [Math.max(0, Math.min(1, x)), Math.max(0, Math.min(1, y))];
+            })
+            .filter((p) => Array.isArray(p) && p.length === 2)
+        : [];
+
+      if (safePathN.length < 2) return -1;
+
+      const c = typeof color === 'string' && color.trim() ? color.trim() : '#000000';
+      const t = Number.isFinite(thickness) ? Math.round(thickness) : 1;
+      const lineWidth = Math.max(1, Math.min(100, t));
+
+      this.layers.push({
+        clipPathN: null,
+        clipKey: null,
+        paints: [{ kind: 'freehand', pathN: safePathN, color: c, thickness: lineWidth }],
+        visibleColors: [c],
+      });
+
+      const layerIndex = this.layers.length - 1;
+      if (this.layers.length === 1) this.resizeToCSSPixels();
+
+      if (this.pendingDraw) window.clearTimeout(this.pendingDraw);
+      this.pendingDraw = window.setTimeout(() => {
+        this.pendingDraw = 0;
+        this.drawQueue = this.drawQueue
+          .then(() => {
+            this.resizeToCSSPixels();
+            const c2 = this.getContext();
+            if (!c2) return;
+            const rect2 = c2.canvas.getBoundingClientRect();
+            const w2 = Math.max(1, rect2.width);
+            const h2 = Math.max(1, rect2.height);
+            this.drawFreehandLineToCtx(c2.ctx, w2, h2, safePathN, c, lineWidth);
+          })
+          .catch(() => {});
+      }, 0);
+
+      return layerIndex;
     }
 
     addLayer(file, repeatCount, color, thickness) {
@@ -2037,12 +2017,36 @@
   }
 
   class PatternPickerController {
+        setDrawModeActive() {
+          this.toolMode = 'free-draw';
+          this.interactionMode = 'draw';
+          // Deactivate all three buttons and aria-pressed
+          if (this.drawToolBtn) {
+            this.drawToolBtn.classList.remove('is-active');
+            this.drawToolBtn.setAttribute('aria-pressed', 'false');
+          }
+          if (this.modeDrawBtn) {
+            this.modeDrawBtn.classList.remove('is-active');
+            this.modeDrawBtn.setAttribute('aria-pressed', 'false');
+          }
+          if (this.modeSelectBtn) {
+            this.modeSelectBtn.classList.remove('is-active');
+            this.modeSelectBtn.setAttribute('aria-pressed', 'false');
+          }
+          // Activate only the Tekenen button
+          if (this.drawToolBtn) {
+            this.drawToolBtn.classList.add('is-active');
+            this.drawToolBtn.setAttribute('aria-pressed', 'true');
+          }
+          // Do NOT call setInteractionMode here, to avoid toggling Vormen/Selecteren UI
+          if (typeof this.attachDrawEvents === 'function') this.attachDrawEvents();
+        }
     constructor() {
       this.select = qs('patternSelect');
       this.preview = qs('patternPreview');
       this.rightViewStart = qs('rightViewStart');
-	  this.rightViewAbout = qs('rightViewAbout');
-	  this.aboutPublishTime = qs('aboutPublishTime');
+	    this.rightViewAbout = qs('rightViewAbout');
+	    this.aboutPublishTime = qs('aboutPublishTime');
       this.rightViewComposition = qs('rightViewComposition');
       this.compositionGrid = qs('compositionGrid');
       this.rightViewPatterns = qs('rightViewPatterns');
@@ -2050,23 +2054,23 @@
       this.rightViewColors = qs('rightViewColors');
       this.rightViewImages = qs('rightViewImages');
       this.rightViewShapes = qs('rightViewShapes');
-	  this.rightPanelTitle = qs('rightPanelTitle');
+	    this.rightPanelTitle = qs('rightPanelTitle');
       this.savedImagesRoot = qs('savedImages');
       this.savedShapesRoot = qs('savedShapes');
       this.saveShapeBtn = qs('saveShapeBtn');
-	  this.deleteShapeBtn = qs('deleteShapeBtn');
+	    this.deleteShapeBtn = qs('deleteShapeBtn');
       this.canvas = qs('mainCanvas');
       this.compositionOverlay = qs('compositionOverlay');
       this.layersRoot = qs('layersRoot');
-	  this.cropToolBtn = qs('cropToolBtn');
-	  this.saveImageBtn = qs('saveImageBtn');
-    this.cropToolBtnRight = qs('cropToolBtnRight');
-    this.saveImageBtnRight = qs('saveImageBtnRight');
-	  this.exportPdfBtn = qs('exportPdfBtn');
-    this.clearConceptBtn = qs('clearConceptBtn');
-    this.deleteSavedImageBtn = qs('deleteSavedImageBtn');
-    this.downloadSavedImageBtn = qs('downloadSavedImageBtn');
-    this.favoriteSavedImageBtn = qs('favoriteSavedImageBtn');
+      this.cropToolBtn = qs('cropToolBtn');
+      this.saveImageBtn = qs('saveImageBtn');
+      this.cropToolBtnRight = qs('cropToolBtnRight');
+      this.saveImageBtnRight = qs('saveImageBtnRight');
+      this.exportPdfBtn = qs('exportPdfBtn');
+      this.clearConceptBtn = qs('clearConceptBtn');
+      this.deleteSavedImageBtn = qs('deleteSavedImageBtn');
+      this.downloadSavedImageBtn = qs('downloadSavedImageBtn');
+      this.favoriteSavedImageBtn = qs('favoriteSavedImageBtn');
       this.repeat = qs('patternRepeat');
       this.repeatValue = qs('patternRepeatValue');
 
@@ -2077,21 +2081,22 @@
       this.tileScaleToShapeTextures = qs('tileScaleToShapeTextures');
 
       this.palette = qs('palette');
-    this.colorBarPrimary = qs('colorBarPrimary');
-    this.colorBarComplement = qs('colorBarComplement');
-    this.colorBarSupportA = qs('colorBarSupportA');
-    this.colorBarSupportB = qs('colorBarSupportB');
-    this.colorMixCanvas = qs('colorMixCanvas');
-    this.colorMixCanvasPatterns = qs('colorMixCanvasPatterns');
-    this.colorMixCanvasTextures = qs('colorMixCanvasTextures');
-    this.colorMixCanvasShapes = qs('colorMixCanvasShapes');
-	  this.thickness = qs('patternThickness');
-	  this.thicknessValue = qs('patternThicknessValue');
+      this.colorBarPrimary = qs('colorBarPrimary');
+      this.colorBarComplement = qs('colorBarComplement');
+      this.colorBarSupportA = qs('colorBarSupportA');
+      this.colorBarSupportB = qs('colorBarSupportB');
+      this.colorMixCanvas = qs('colorMixCanvas');
+      this.colorMixCanvasPatterns = qs('colorMixCanvasPatterns');
+      this.colorMixCanvasTextures = qs('colorMixCanvasTextures');
+      this.colorMixCanvasShapes = qs('colorMixCanvasShapes');
+      this.thickness = qs('patternThickness');
+      this.thicknessValue = qs('patternThicknessValue');
       this.tileScaleToShape = qs('tileScaleToShape');
 
       this.conceptInput = qs('conceptInput');
       this.descriptionInput = qs('descriptionInput');
 
+      this.drawToolBtn = qs('drawToolBtn');
     this.modeDrawBtn = qs('modeDrawBtn');
     this.modeSelectBtn = qs('modeSelectBtn');
     this.interactionMode = 'draw'; // 'draw' | 'select'
@@ -2292,7 +2297,13 @@
         });
       }
 
-      // Left-panel mode toggle: Tekenen (default) vs Selecteren.
+      // Left-panel mode toggle: Tekenen (nieuw), Vormen (was Tekenen), Selecteren.
+      if (this.drawToolBtn instanceof HTMLButtonElement) {
+        this.drawToolBtn.addEventListener('click', () => {
+          this.setDrawModeActive();
+        });
+      }
+
       if (this.modeDrawBtn instanceof HTMLButtonElement && this.modeSelectBtn instanceof HTMLButtonElement) {
         this.modeDrawBtn.addEventListener('click', () => {
           this.setInteractionMode('draw');
@@ -2469,14 +2480,33 @@
       const mode = nextMode === 'select' ? 'select' : 'draw';
       this.interactionMode = mode;
 
-      if (!(this.modeDrawBtn instanceof HTMLButtonElement)) return;
-      if (!(this.modeSelectBtn instanceof HTMLButtonElement)) return;
+      // Entering Vormen mode must leave free-draw mode.
+      if (mode === 'draw' && this.toolMode !== 'crop') {
+        this.toolMode = 'draw';
+      }
 
-      const isDraw = mode !== 'select';
-      this.modeDrawBtn.classList.toggle('is-active', isDraw);
-      this.modeSelectBtn.classList.toggle('is-active', !isDraw);
-      this.modeDrawBtn.setAttribute('aria-pressed', isDraw ? 'true' : 'false');
-      this.modeSelectBtn.setAttribute('aria-pressed', !isDraw ? 'true' : 'false');
+      // Deactivate all three buttons first
+      if (this.drawToolBtn) {
+        this.drawToolBtn.classList.remove('is-active');
+        this.drawToolBtn.setAttribute('aria-pressed', 'false');
+      }
+      if (this.modeDrawBtn) {
+        this.modeDrawBtn.classList.remove('is-active');
+        this.modeDrawBtn.setAttribute('aria-pressed', 'false');
+      }
+      if (this.modeSelectBtn) {
+        this.modeSelectBtn.classList.remove('is-active');
+        this.modeSelectBtn.setAttribute('aria-pressed', 'false');
+      }
+
+      // Activate only the correct button
+      if (mode === 'draw' && this.modeDrawBtn) {
+        this.modeDrawBtn.classList.add('is-active');
+        this.modeDrawBtn.setAttribute('aria-pressed', 'true');
+      } else if (mode === 'select' && this.modeSelectBtn) {
+        this.modeSelectBtn.classList.add('is-active');
+        this.modeSelectBtn.setAttribute('aria-pressed', 'true');
+      }
     }
 
     resetToStart() {
@@ -2854,6 +2884,7 @@
     }
 
     renderCompositionThumbs() {
+      console.log('[renderCompositionThumbs] wordt aangeroepen');
       if (!(this.compositionGrid instanceof HTMLElement)) return;
       const grid = this.compositionGrid;
       if (grid.dataset.built === '1') {
@@ -5485,6 +5516,18 @@
         const i = layers.length - 1 - viewIndex; // model index
         const layer = layers[i] || {};
         const isBg = layer && layer.isBackground === true;
+        const paintsForType = Array.isArray(layer.paints) && layer.paints.length ? layer.paints : [];
+        const hasFreehandPaint = paintsForType.some((p) => p && p.kind === 'freehand' && Array.isArray(p.pathN));
+        const hasImagePaint = paintsForType.some((p) => p && p.kind === 'image' && p.blob instanceof Blob);
+        const hasTexturePaint = paintsForType.some((p) => p && p.kind === 'texture' && typeof p.textureId === 'string' && p.textureId.trim());
+        const hasClipShape = Array.isArray(layer.clipPathN) && layer.clipPathN.length >= 3;
+
+        let layerLabel = 'Patroon';
+        if (isBg) layerLabel = 'Achtergrond';
+        else if (hasFreehandPaint) layerLabel = 'Tekening';
+        else if (hasImagePaint) layerLabel = 'Afbeelding';
+        else if (hasTexturePaint) layerLabel = 'Textuur';
+        else if (hasClipShape) layerLabel = 'Vorm';
 
         const item = document.createElement('div');
         const isPrimary = i === this.activeLayerIndex;
@@ -5520,8 +5563,13 @@
         num.className = 'layers__num';
         num.textContent = String(viewIndex + 1);
 
+        const name = document.createElement('span');
+        name.className = 'layers__name';
+        name.textContent = layerLabel;
+
         left.appendChild(radio);
         left.appendChild(num);
+        left.appendChild(name);
 
         // Click on the row selects; Shift+click multi-selects.
         item.addEventListener('click', (evt) => {
@@ -5533,7 +5581,6 @@
         const swatches = document.createElement('span');
         swatches.className = 'layers__swatches';
 
-        const paintsForType = Array.isArray(layer.paints) && layer.paints.length ? layer.paints : [];
         const imagePaint = paintsForType.find((p) => p && p.kind === 'image' && p.blob instanceof Blob);
         if (imagePaint) {
           const blob = imagePaint.blob;
@@ -6123,7 +6170,8 @@
 
     const polys = [];
     if (this.isDrawing && Array.isArray(this.drawPath) && this.drawPath.length >= 2) {
-    polys.push({ points: this.drawPath, close: false });
+    const isFreeDraw = this.toolMode === 'free-draw';
+    polys.push({ points: this.drawPath, close: !isFreeDraw });
     } else if (Array.isArray(this.activeClipPathsN) && this.activeClipPathsN.length) {
     for (const polyN of this.activeClipPathsN) {
       if (!Array.isArray(polyN) || polyN.length < 2) continue;
@@ -6136,15 +6184,29 @@
     if (polys.length) {
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
-    ctx.strokeStyle = '#000000';
-    ctx.globalAlpha = 0.8;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const poly of polys) {
       const points = poly.points;
       if (!points || points.length < 2) continue;
+
+      const isDrawPreview = this.isDrawing && poly.close === false;
+      const previewColor = typeof this.currentColor === 'string' && this.currentColor.trim() ? this.currentColor.trim() : '#000000';
+      const previewThicknessRaw = Number(this.currentThickness);
+      const previewThickness = Number.isFinite(previewThicknessRaw) ? Math.max(1, Math.min(100, Math.round(previewThicknessRaw))) : 1;
+
+      if (isDrawPreview) {
+        ctx.strokeStyle = previewColor;
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = previewThickness;
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeStyle = '#000000';
+        ctx.globalAlpha = 0.8;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+      }
+
       ctx.beginPath();
       ctx.moveTo(points[0][0], points[0][1]);
       for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
@@ -6862,7 +6924,12 @@
             const ctx = cropCanvas.getContext('2d');
             if (ctx && this.canvas instanceof HTMLCanvasElement) {
               ctx.drawImage(this.canvas, x0, y0, rw, rh, 0, 0, rw, rh);
-              this.applyCropResultToLayers(cropCanvas);
+              if (typeof this.applyCropResultToLayers === 'function') {
+
+                this.applyCropResultToLayers(cropCanvas);
+              } else {
+                console.error('[FOUT] applyCropResultToLayers is geen functie op', this);
+              }
             }
           }
         }
@@ -6873,40 +6940,41 @@
         drawOverlayPath();
         evt.preventDefault();
         return;
-          // --- Toevoeging: na croppen, maak PNG, wis lagen, zet PNG als enige laag ---
-          // Dit hoort direct na het afronden van de crop-actie, niet bij opslaan
-          applyCropResultToLayers(cropCanvas) {
-            if (!cropCanvas) return;
-            try {
-              const dataUrl = cropCanvas.toDataURL('image/png');
-              // Wis alle lagen
-              if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
-                this.canvasLayers.clearAllLayers();
-              }
-              // Maak nieuwe Image-laag
-              const img = new window.Image();
-              img.onload = () => {
-                if (this.canvasLayers && typeof this.canvasLayers.layers === 'object') {
-                  const layer = {
-                    kind: 'image',
-                    image: img,
-                    w: cropCanvas.width,
-                    h: cropCanvas.height,
-                    x: 0,
-                    y: 0,
-                    isBackground: true
-                  };
-                  this.canvasLayers.layers = [layer];
-                  if (typeof this.canvasLayers.redrawAllLayers === 'function') {
-                    this.canvasLayers.redrawAllLayers();
-                  }
-                }
-              };
-              img.src = dataUrl;
-            } catch (e) {
-              // fallback: doe niets
-            }
+      // --- Toevoeging: na croppen, maak PNG, wis lagen, zet PNG als enige laag ---
+      // Dit hoort direct na het afronden van de crop-actie, niet bij opslaan
+      MenuClassOrObject.prototype.applyCropResultToLayers = function(cropCanvas) {
+
+        if (!cropCanvas) return;
+        try {
+          const dataUrl = cropCanvas.toDataURL('image/png');
+          // Wis alle lagen
+          if (this.canvasLayers && typeof this.canvasLayers.clearAllLayers === 'function') {
+            this.canvasLayers.clearAllLayers();
           }
+          // Maak nieuwe Image-laag
+          const img = new window.Image();
+          img.onload = () => {
+            if (this.canvasLayers && typeof this.canvasLayers.layers === 'object') {
+              const layer = {
+                kind: 'image',
+                image: img,
+                w: cropCanvas.width,
+                h: cropCanvas.height,
+                x: 0,
+                y: 0,
+                isBackground: true
+              };
+              this.canvasLayers.layers = [layer];
+              if (typeof this.canvasLayers.redrawAllLayers === 'function') {
+                this.canvasLayers.redrawAllLayers();
+              }
+            }
+          };
+          img.src = dataUrl;
+        } catch (e) {
+          console.error('[FOUT] applyCropResultToLayers error', e);
+        }
+      };
       }
 
       if (this.isDraggingShape) {
@@ -6965,7 +7033,7 @@
 
       const path = Array.isArray(this.drawPath) ? this.drawPath.slice() : [];
       this.drawPath = [];
-      if (path.length < 3) return;
+      if (path.length < 2) return;
 
       const rect = overlay.getBoundingClientRect();
       const w = Math.max(1, rect.width);
@@ -6974,18 +7042,25 @@
         .map((p) => [Math.max(0, Math.min(1, p[0] / w)), Math.max(0, Math.min(1, p[1] / h))])
         .filter((p) => Array.isArray(p) && p.length === 2);
 
-      const nextKey = this.makeClipKey(pathN);
-
-      this.activeClipPathN = pathN;
-      this.activeClipKey = nextKey;
-
-      // A new layer item is created only when the drawn shape changes.
-      // When the shape stays the same, we append paints into the existing shape-layer.
-      if (this.rightView === 'textures' && this.currentTextureId) this.applyTextureToActiveShape();
-      else this.applyToActiveShape();
+      if (this.toolMode === 'free-draw') {
+        // Tekenen: open vrije lijn met gekozen kleur en dikte.
+        if (Array.isArray(pathN) && pathN.length >= 2 && this.canvasLayers && typeof this.canvasLayers.addFreehandLineLayer === 'function') {
+          this.canvasLayers.addFreehandLineLayer(pathN, this.currentColor, this.currentThickness);
+          this.renderLayersList();
+        }
+      } else {
+        // Vormen: maak een gesloten vorm en vul die via de bestaande shape-flow.
+        if (Array.isArray(pathN) && pathN.length >= 3) {
+          this.activeClipPathN = pathN.slice();
+          this.activeClipKey = this.makeClipKey(this.activeClipPathN);
+          this.activeClipPathsN = null;
+          this.applyToActiveShape();
+          this.renderLayersList();
+        }
+      }
 
       drawOverlayPath();
-	  evt.preventDefault();
+      evt.preventDefault();
     };
 
     overlay.addEventListener('pointerup', finish);
@@ -7780,6 +7855,7 @@
     }
   }
 
+  const NS = {};
   NS.initLayout = function initLayout() {
     const picker = new PatternPickerController();
     picker.init();
@@ -7791,4 +7867,5 @@
     }).init();
     new PanelsController().init();
   };
-})();
+export { generateTextureDataUrl, MenuController, SavedImagesDB, PatternPickerController };
+

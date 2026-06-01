@@ -1,3 +1,4 @@
+
 /* Ontwerpstudio 2026 - basic styles */
 
 html,
@@ -98,7 +99,7 @@ body {
   }
 
   .topnav {
-    display: none;
+    display: flex !important;
     position: fixed;
     top: var(--topbar-h);
     left: 0;
@@ -112,7 +113,7 @@ body {
   }
 
   body.menu-open .topnav {
-    display: flex;
+    display: flex !important;
   }
 }
 
@@ -587,6 +588,14 @@ body.right-collapsed #rightPanel {
   font-size: 12px;
   opacity: 0.9;
   min-width: 24px;
+}
+
+.layers__name {
+  font-size: 12px;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .layers__swatches {
