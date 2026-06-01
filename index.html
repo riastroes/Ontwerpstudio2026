@@ -55,7 +55,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 					</div>
 					<div class="panel__body">
 						<div class="mode-toggle" aria-label="Werkmodus">
-							<button id="modeDrawBtn" class="mode-toggle__btn is-active" type="button" aria-pressed="true">Tekenen</button>
+							<button id="drawToolBtn" class="mode-toggle__btn" type="button" aria-pressed="false">Tekenen</button>
+							<button id="modeDrawBtn" class="mode-toggle__btn is-active" type="button" aria-pressed="true">Vormen</button>
 							<button id="modeSelectBtn" class="mode-toggle__btn" type="button" aria-pressed="false">Selecteren</button>
 						</div>
 						<div id="layersRoot" class="layers" aria-label="Lagen"></div>
@@ -93,7 +94,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 							<label class="field">Compositie</label>
 							<div id="compositionGrid" class="composition-grid" aria-label="Compositie schetsen"></div>
 						</div>
-						<div id="rightViewPatterns" data-right-view="patterns">
+						<div id="rightViewPatterns" data-right-view="patterns" hidden>
 							<label class="field" for="patternSelect">Patroon</label>
 							<select id="patternSelect" class="select"></select>
 							<div class="pattern-preview" id="patternPreview" role="img" aria-label="Patroon preview"></div>
@@ -170,7 +171,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 			</div>
 		</div>
 		<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-		<script src="./scripts/menu.js"></script>
-		<script src="./scripts/main.js"></script>
+		<script type="module" src="./scripts/menu/index.js"></script>
 	</body>
 </html>
